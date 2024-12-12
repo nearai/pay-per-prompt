@@ -684,7 +684,7 @@ components:
                 type: integer
               logprobs:
                 type: object
-                
+                nullable: true
                 properties:
                   text_offset:
                     type: array
