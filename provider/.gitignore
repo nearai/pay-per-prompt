@@ -1,1 +1,8 @@
-/target
+target
+*~
+TAGS
+*.bk
+.idea
+src/openai
+data/
+stubs/
