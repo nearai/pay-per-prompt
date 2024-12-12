@@ -1,0 +1,5 @@
+providers:
+  - canonical_name: "fireworks"
+    url: "https://api.fireworks.ai/inference/v1"
+    api_key: "YOUR_API_KEY"
+
