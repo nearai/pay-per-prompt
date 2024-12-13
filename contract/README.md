@@ -2,6 +2,12 @@
 
 This contract allows establishing one directional payment channels between two users.
 
+## Build
+
+```
+./build.sh
+```
+
 ## Architecture
 
 There are two users on a payment channel, the receiver (the one that is offering a service) and the sender (the one that is paying for the service).
