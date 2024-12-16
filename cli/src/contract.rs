@@ -24,6 +24,7 @@ pub struct ContractChannel {
     pub force_close_started: Option<Timestamp>,
 }
 
+#[derive(Clone)]
 pub struct Contract {
     client: Client,
     signer: InMemorySigner,
