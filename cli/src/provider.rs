@@ -3,6 +3,8 @@ use near_sdk::AccountId;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+use crate::config::SignedState;
+
 pub struct Provider {
     provider_url: String,
 }
@@ -27,5 +29,10 @@ impl Provider {
                 "ed25519:H8VERRt55YvExnvRP2yjqWeYzQvgGcq3RLi2utZGvwpM",
             )?,
         })
+    }
+
+    pub async fn close_payload(&self, channel_id: &str) -> SignedState {
+        // TODO: Call provider to get close payload
+        todo!()
     }
 }

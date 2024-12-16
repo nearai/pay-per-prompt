@@ -26,6 +26,16 @@ pub struct ContractChannel {
     pub force_close_started: Option<Timestamp>,
 }
 
+impl ContractChannel {
+    pub fn is_closed(&self) -> bool {
+        self.added_balance.is_zero()
+            && self.sender.account_id
+                == "0000000000000000000000000000000000000000000000000000000000000000"
+                    .parse::<AccountId>()
+                    .unwrap()
+    }
+}
+
 #[derive(Clone)]
 pub struct Contract {
     client: Client,
@@ -96,5 +106,19 @@ impl Contract {
                 json!({"channel_id": channel_id}),
             )
             .await
+    }
+
+    pub async fn close(&self, state: SignedState) {
+        self.client
+            .change_call(
+                &self.signer,
+                self.contract.clone(),
+                "close",
+                json!({"state" : state}),
+                // TODO: Adjust this amount (make sure it is enough)
+                Gas::from_tgas(15),
+                NearToken::from_yoctonear(0),
+            )
+            .await;
     }
 }

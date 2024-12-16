@@ -137,15 +137,15 @@ impl Config {
 #[near(serializers = [borsh, json])]
 #[derive(Debug)]
 pub struct State {
-    channel_id: String,
-    spent_balance: NearToken,
+    pub channel_id: String,
+    pub spent_balance: NearToken,
 }
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug)]
 pub struct SignedState {
-    state: State,
-    signature: near_crypto::Signature,
+    pub state: State,
+    pub signature: near_crypto::Signature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
