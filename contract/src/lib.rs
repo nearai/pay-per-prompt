@@ -218,4 +218,10 @@ impl Contract {
             }
         }
     }
+
+    #[private]
+    #[init(ignore_state)]
+    pub fn migrate() -> Self {
+        Self::init()
+    }
 }
