@@ -5,4 +5,13 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.4.11", features = ["derive"] }
-near-sdk = "5.6.0"
+dirs = "5.0.1"
+near-crypto = "0.26.0"
+near-jsonrpc-client = "0.13.0"
+near-jsonrpc-primitives = "0.26.0"
+near-primitives = "0.26.0"
+near-sdk = "5.5.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1" }
+tokio = { version = "1.42.0", features = ["full"] }
+uuid = { version = "1.11.0", features = ["v4"] }

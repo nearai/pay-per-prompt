@@ -1,16 +1,15 @@
-use std::str::FromStr;
-
 use near_sdk::borsh::to_vec;
-use near_sdk::store::Vector;
+use near_sdk::store::LookupMap;
 use near_sdk::{
-    env, near, near_bindgen, require, AccountId, NearToken, PanicOnDefault, Promise,
-    PromiseOrValue, PublicKey, Timestamp,
+    env, near, near_bindgen, require, AccountId, NearToken, PanicOnDefault, Promise, PublicKey,
+    Timestamp,
 };
 use signature::Signature;
+use std::str::FromStr;
 
 mod signature;
 
-type ChannelId = u32;
+type ChannelId = String;
 
 const SECOND: u64 = 1_000_000_000;
 const DAY: u64 = 24 * 60 * 60 * SECOND;
@@ -48,7 +47,7 @@ pub struct Channel {
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Contract {
-    channels: Vector<Channel>,
+    channels: LookupMap<ChannelId, Channel>,
 }
 
 #[near(serializers = [borsh, json])]
@@ -82,12 +81,17 @@ impl Contract {
     #[private]
     pub fn init() -> Contract {
         Contract {
-            channels: Vector::new(b"c".to_vec()),
+            channels: LookupMap::new(b"c".to_vec()),
         }
     }
 
     #[payable]
-    pub fn open_channel(&mut self, receiver: Account, sender: Account) -> ChannelId {
+    pub fn open_channel(&mut self, channel_id: ChannelId, receiver: Account, sender: Account) {
+        require!(
+            !self.channels.contains_key(&channel_id),
+            "Channel already exists"
+        );
+
         let channel = Channel {
             receiver,
             sender,
@@ -96,15 +100,13 @@ impl Contract {
             force_close_started: None,
         };
 
-        let channel_id = self.channels.len();
-        self.channels.push(channel);
-        channel_id
+        self.channels.insert(channel_id, channel);
     }
 
     pub fn withdraw(&mut self, state: SignedState) -> Promise {
-        let channel_id = state.state.channel_id;
+        let channel_id = state.state.channel_id.clone();
 
-        let channel = self.channels.get_mut(channel_id).unwrap();
+        let channel = self.channels.get_mut(&channel_id).unwrap();
 
         require!(
             env::predecessor_account_id() == channel.receiver.account_id,
@@ -135,16 +137,16 @@ impl Contract {
 
     #[payable]
     pub fn topup(&mut self, channel_id: ChannelId) {
-        let channel = self.channels.get_mut(channel_id).unwrap();
+        let channel = self.channels.get_mut(&channel_id).unwrap();
         require!(channel.force_close_started.is_none(), "Channel is closing.");
         let amount = env::attached_deposit();
         channel.added_balance = channel.added_balance.saturating_add(amount);
     }
 
     pub fn close(&mut self, state: SignedState) -> Promise {
-        let channel_id = state.state.channel_id;
+        let channel_id = state.state.channel_id.clone();
 
-        let channel = self.channels.get_mut(channel_id).unwrap();
+        let channel = self.channels.get_mut(&channel_id).unwrap();
 
         // Anyone can close the channel, as long as it has a signature from the receiver
         require!(
@@ -163,13 +165,19 @@ impl Contract {
 
         let sender = channel.sender.account_id.clone();
 
-        self.channels.replace(channel_id, Default::default());
+        // Remove channel from the state
+        //
+        // This is equivalent to remove the channel, though we keep it in the state
+        // so no new channel with the same id is created in the future. If the same
+        // channel is reused (either provider or user could trick each other) by
+        // reusing an old channel id and replaying old messages.
+        self.channels.insert(channel_id, Default::default());
 
         Promise::new(sender).transfer(remaining_balance)
     }
 
     pub fn force_close_start(&mut self, channel_id: ChannelId) {
-        let channel = self.channels.get_mut(channel_id).unwrap();
+        let channel = self.channels.get_mut(&channel_id).unwrap();
 
         require!(
             channel.force_close_started.is_none(),
@@ -184,24 +192,30 @@ impl Contract {
         channel.force_close_started = Some(env::block_timestamp());
     }
 
-    pub fn force_close_finish(&mut self, channel_id: ChannelId) -> PromiseOrValue<()> {
-        let channel = self.channels.get_mut(channel_id).unwrap();
+    pub fn force_close_finish(&mut self, channel_id: ChannelId) -> Promise {
+        let channel = self.channels.get_mut(&channel_id).unwrap();
 
         match channel.force_close_started {
             Some(start_event) => {
                 let difference = env::block_timestamp() - start_event;
                 if difference >= HARD_CLOSE_TIMEOUT {
+                    let remaining_balance = channel
+                        .added_balance
+                        .saturating_sub(channel.withdrawn_balance);
+
+                    let sender = channel.sender.account_id.clone();
+
+                    // Remove channel from the state [See message above]
+                    self.channels.insert(channel_id, Default::default());
+
+                    Promise::new(sender).transfer(remaining_balance)
                 } else {
+                    env::panic_str("Channel can't be closed yet. Not enough time has passed.");
                 }
             }
-            None => env::panic_str("Channel is not closing."),
+            None => {
+                env::panic_str("Channel is not closing.");
+            }
         }
-
-        self.channels.replace(channel_id, Default::default());
-        PromiseOrValue::Value(())
-    }
-
-    pub fn channel(&self, channel_id: ChannelId) -> Option<Channel> {
-        self.channels.get(channel_id).cloned()
     }
 }
