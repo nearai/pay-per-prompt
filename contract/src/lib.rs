@@ -3,8 +3,8 @@ use std::str::FromStr;
 use near_sdk::borsh::to_vec;
 use near_sdk::store::Vector;
 use near_sdk::{
-    env, near, require, AccountId, NearToken, PanicOnDefault, Promise, PromiseOrValue, PublicKey,
-    Timestamp,
+    env, near, near_bindgen, require, AccountId, NearToken, PanicOnDefault, Promise,
+    PromiseOrValue, PublicKey, Timestamp,
 };
 use signature::Signature;
 
@@ -18,7 +18,7 @@ const HARD_CLOSE_TIMEOUT: u64 = 7 * DAY;
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone)]
-struct Account {
+pub struct Account {
     account_id: AccountId,
     public_key: PublicKey,
 }
@@ -37,7 +37,7 @@ impl Default for Account {
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone, Default)]
-struct Channel {
+pub struct Channel {
     receiver: Account,
     sender: Account,
     added_balance: NearToken,
@@ -47,7 +47,7 @@ struct Channel {
 
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
-struct Contract {
+pub struct Contract {
     channels: Vector<Channel>,
 }
 
@@ -58,7 +58,7 @@ struct State {
 }
 
 #[near(serializers = [borsh, json])]
-struct SignedState {
+pub struct SignedState {
     state: State,
     signature: Signature,
 }
@@ -76,7 +76,7 @@ impl SignedState {
     }
 }
 
-#[near]
+#[near_bindgen]
 impl Contract {
     #[init]
     #[private]
