@@ -12,6 +12,7 @@ use near_sdk::{Gas, NearToken};
 use serde::de::DeserializeOwned;
 use serde_json::from_slice;
 
+#[derive(Clone)]
 pub struct Client {
     client: JsonRpcClient,
     verbose: bool,
