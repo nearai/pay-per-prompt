@@ -109,11 +109,6 @@ impl Contract {
         let channel = self.channels.get_mut(&channel_id).unwrap();
 
         require!(
-            env::predecessor_account_id() == channel.receiver.account_id,
-            "Only receiver can withdraw"
-        );
-
-        require!(
             state.verify(&channel.sender.public_key),
             "Invalid signature from sender"
         );
@@ -174,6 +169,10 @@ impl Contract {
         self.channels.insert(channel_id, Default::default());
 
         Promise::new(sender).transfer(remaining_balance)
+    }
+
+    pub fn withdraw_and_close(&mut self, state: SignedState, close: SignedState) -> Promise {
+        self.withdraw(state).then(self.close(close))
     }
 
     pub fn force_close_start(&mut self, channel_id: ChannelId) {
