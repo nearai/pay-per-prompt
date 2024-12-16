@@ -68,14 +68,17 @@ pub async fn info_command(config: &Config, channel_id: Option<String>, update: b
     if update {
         let contract = config.near_contract();
         let updated_channel = contract.channel(&channel_id).await;
-
-        if channel.update_if_newer(updated_channel, config.verbose) {
-            if config.verbose {
-                println!(
-                    "\nChannel details:\n{}\n",
-                    near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
-                );
+        if let Some(updated_channel) = updated_channel {
+            if channel.update_if_newer(updated_channel, config.verbose) {
+                if config.verbose {
+                    println!(
+                        "\nChannel details:\n{}\n",
+                        near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
+                    );
+                }
             }
+        } else {
+            eprintln!("Channel {} not found", channel_id);
         }
     }
 }

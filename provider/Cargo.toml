@@ -35,3 +35,16 @@ tower-http = { version = "0.6.2", features = ["full"] }
 openaiapi = { version = "2.0.0", path = "stubs/openaiapi", features = ["server"] }
 openaiclient = { version = "2.0.0", path = "stubs/openaiclient"}
 anyhow = "1.0.94"
+near-cli-rs = "0.16.1"
+near-crypto = "0.27.0"
+near-primitives = "0.27.0"
+near-jsonrpc-client = "0.14"
+
+sqlx = { version = "0.8.2", features = [ "runtime-tokio", "tls-native-tls", "sqlite", "chrono" ] }
+syn = "2.0.90"
+quote = "1.0.37"
+sqlxinsert = "0.11.0"
+chrono = { version = "0.4.39", features = ["serde"] }
+near-sdk = "5.7.0"
+
+cli = { path = "../cli" }

@@ -6,3 +6,4 @@ TAGS
 src/openai
 data/
 stubs/
+.sqlx

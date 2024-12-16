@@ -17,17 +17,36 @@ RUN groupadd --gid $USER_GID $USER \
 
 # Install dependencies
 RUN apt-get update && \
-    apt-get -y install --no-install-recommends git curl wget build-essential ca-certificates default-jre pkg-config libssl-dev && \
+    apt-get -y install --no-install-recommends \
+    git curl wget jq \
+    build-essential ca-certificates default-jre \
+    libudev-dev pkg-config libssl-dev \
+    sqlite3 libsqlite3-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+## Also yq
+ARG YQ_VERSION=v4.44.6
+ARG YQ_BINARY=yq_linux_amd64
+RUN set -eux && \
+    wget -q --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 \
+        "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/${YQ_BINARY}.tar.gz" -O /tmp/yq.tar.gz && \
+    tar xzf /tmp/yq.tar.gz -C /tmp && \
+    mv "/tmp/${YQ_BINARY}" /usr/bin/yq && \
+    chmod +x /usr/bin/yq && \
+    rm -f /tmp/yq.tar.gz && \
+    yq --version
+
 # Install python & python deps
 RUN apt-get update && \
-    apt-get -y install --no-install-recommends python3 python3-pip python3-setuptools python3-wheel && \
+    apt-get -y install --no-install-recommends python3 python3-dev python3-pip python3-setuptools python3-wheel && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 RUN python3 -m pip install --upgrade pip
-RUN python3 -m pip install openai numpy pillow ipython scipy matplotlib pandas
+RUN python3 -m pip install \
+    openai numpy pillow ipython \
+    scipy matplotlib pandas py-near \
+    base58 loguru httpx
 
 # Install node
 RUN curl -sL https://deb.nodesource.com/setup_${NODE_VERSION} | bash - && \
@@ -48,6 +67,17 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     rustup component add rust-src rust-analyzer-preview && \
     chown -R $USER:$USER /usr/local/rustup /usr/local/cargo
 RUN rustup update
+
+# Install near cli
+ARG NEAR_CLI_VERSION=v0.16.1
+RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/${NEAR_CLI_VERSION}/near-cli-rs-installer.sh | sh
+
+# Install sqlx cli
+ARG SQLX_VERSION=0.8.2
+RUN cargo install sqlx-cli@${SQLX_VERSION}
+
+# Give user ownership of the upper cargo directory
+RUN chown -R $USER:$USER /usr/local/cargo
 
 # Change to non-privileged user
 USER $USER
