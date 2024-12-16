@@ -1,8 +1,23 @@
 use crate::{client::Client, config::Config, provider::Details, utils::find_signer};
-use near_crypto::InMemorySigner;
+use near_crypto::{InMemorySigner, PublicKey};
 use near_primitives::types::AccountId;
-use near_sdk::{Gas, NearToken};
+use near_sdk::{near, Gas, NearToken, Timestamp};
 use serde_json::json;
+
+#[near(serializers = [json])]
+pub struct ContractAccount {
+    pub account_id: AccountId,
+    pub public_key: PublicKey,
+}
+
+#[near(serializers = [json])]
+pub struct ContractChannel {
+    pub receiver: ContractAccount,
+    pub sender: ContractAccount,
+    pub added_balance: NearToken,
+    pub withdrawn_balance: NearToken,
+    pub force_close_started: Option<Timestamp>,
+}
 
 pub struct Contract {
     client: Client,
@@ -40,5 +55,15 @@ impl Contract {
                 amount,
             )
             .await;
+    }
+
+    pub async fn channel(&self, channel_id: &str) -> ContractChannel {
+        self.client
+            .view_call(
+                self.contract.clone(),
+                "channel",
+                json!({"channel_id": channel_id}),
+            )
+            .await
     }
 }

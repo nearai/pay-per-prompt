@@ -1,6 +1,7 @@
 use crate::{
     config::{Channel, Config, ConfigUpdate},
     provider::{Details, Provider},
+    utils::find_only_channel_id,
 };
 use near_sdk::{AccountId, NearToken};
 
@@ -36,8 +37,9 @@ pub async fn open_payment_channel_command(
         sender,
         sender_secret_key: sk,
         spent_balance: NearToken::from_yoctonear(0),
-        added_balance: NearToken::from_yoctonear(0),
+        added_balance: amount,
         withdrawn_balance: NearToken::from_yoctonear(0),
+        force_close_started: None,
     };
 
     // Save channel information to local storage
@@ -56,4 +58,68 @@ pub fn config_command(mut config: Config, update: &ConfigUpdate) {
 
     println!("\nConfig updated:");
     serde_json::to_writer_pretty(std::io::stdout(), &config).unwrap();
+}
+
+pub async fn info_command(config: &Config, channel_id: Option<String>, update: bool) {
+    let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
+    let mut channel = Channel::load(channel_id.clone());
+
+    if config.verbose {
+        println!(
+            "\nChannel details:\n{}\n",
+            near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
+        );
+    }
+
+    if update {
+        let contract = config.near_contract();
+        let updated_channel = contract.channel(&channel_id).await;
+
+        if channel.update_if_newer(updated_channel, config.verbose) {
+            if config.verbose {
+                println!(
+                    "\nChannel details:\n{}\n",
+                    near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
+                );
+            }
+        }
+    }
+}
+
+pub fn send_command(config: &Config, amount: NearToken, channel_id: Option<String>, update: bool) {
+    let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
+    let mut channel = Channel::load(channel_id);
+
+    if config.verbose {
+        println!(
+            "\nChannel details:\n{}\n",
+            near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
+        );
+    }
+
+    let new_balance = channel.spent_balance.saturating_add(amount);
+
+    if new_balance > channel.added_balance {
+        eprintln!(
+            "Amount exceeds the available balance. Current balance: {}, Sending: {}",
+            channel.available_balance(),
+            amount
+        );
+        std::process::exit(1);
+    }
+
+    channel.spent_balance = new_balance;
+
+    if config.verbose {
+        println!(
+            "\nState of the channel signed:\n{}\n",
+            serde_json::to_string_pretty(&channel.payload()).unwrap()
+        );
+    }
+
+    println!("\nPayload:\n{}\n", channel.payload_b64());
+
+    if update {
+        channel.save(config.verbose);
+    }
 }
