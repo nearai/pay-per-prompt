@@ -1,8 +1,10 @@
 use near_crypto::InMemorySigner;
-use near_jsonrpc_client::{methods, JsonRpcClient};
+use near_jsonrpc_client::{
+    methods::{self, tx::RpcTransactionResponse},
+    JsonRpcClient,
+};
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::{
-    hash::CryptoHash,
     types::{AccountId, BlockReference, Finality, FunctionArgs},
     views::QueryRequest,
 };
@@ -12,12 +14,14 @@ use serde_json::from_slice;
 
 pub struct Client {
     client: JsonRpcClient,
+    verbose: bool,
 }
 
 impl Client {
-    pub fn new(server_addr: &str) -> Self {
+    pub fn new(server_addr: &str, verbose: bool) -> Self {
         Self {
             client: JsonRpcClient::connect(server_addr),
+            verbose,
         }
     }
 
@@ -52,7 +56,7 @@ impl Client {
         args: impl ToString,
         gas: Gas,
         deposit: NearToken,
-    ) -> CryptoHash {
+    ) -> RpcTransactionResponse {
         let access_key_query_response = self
             .client
             .call(near_jsonrpc_client::methods::query::RpcQueryRequest {
@@ -94,7 +98,13 @@ impl Client {
 
         let sent_at = tokio::time::Instant::now();
         let tx_hash = self.client.call(request).await.unwrap();
-        eprintln!("Submitted transaction: {:?}", tx_hash);
+
+        if self.verbose {
+            eprintln!(
+                "\nSubmitted transaction.\nhttps://nearblocks.io/txns/{:?}\n",
+                tx_hash
+            );
+        }
 
         loop {
             let response = self
@@ -123,14 +133,8 @@ impl Client {
                     }
                     _ => unreachable!(),
                 },
-                Ok(response) => {
-                    println!("response gotten after: {}s", delta);
-                    println!("response: {:#?}", response);
-                    break;
-                }
+                Ok(response) => return response,
             }
         }
-
-        tx_hash
     }
 }

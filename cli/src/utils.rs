@@ -20,9 +20,6 @@ fn find_on_path(path: PathBuf, target: &str) -> Option<PathBuf> {
 pub fn find_signer(account_id: AccountId) -> near_crypto::InMemorySigner {
     let path = dirs::home_dir().unwrap().join(".near-credentials");
     find_on_path(path, &format!("{}.json", account_id))
-        .and_then(|path| {
-            println!("{:?}", path);
-            near_crypto::InMemorySigner::from_file(&path).ok()
-        })
+        .and_then(|path| near_crypto::InMemorySigner::from_file(&path).ok())
         .unwrap()
 }

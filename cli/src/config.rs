@@ -127,13 +127,13 @@ impl Config {
             std::fs::create_dir_all(&channesl).unwrap();
         }
 
-        let channel_file = channesl.join(format!("{}.json", &channel.receiver.account_id));
+        let channel_file = channesl.join(format!("{}.json", &channel.channel_id));
 
         let channel = serde_json::to_string_pretty(&channel).unwrap();
         std::fs::write(&channel_file, channel).unwrap();
 
         if self.verbose {
-            println!("Channel information saved to {:?}", channel_file);
+            println!("\nChannel information saved to:\n{:?}\n", channel_file);
         }
     }
 
@@ -144,6 +144,7 @@ impl Config {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Channel {
+    pub channel_id: String,
     pub receiver: Details,
     pub sender: Details,
     pub sender_secret_key: near_crypto::SecretKey,

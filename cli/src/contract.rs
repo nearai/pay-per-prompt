@@ -13,7 +13,7 @@ pub struct Contract {
 impl Contract {
     pub fn new(config: &Config) -> Self {
         Self {
-            client: Client::new(&config.near_rpc_url),
+            client: Client::new(&config.near_rpc_url, config.verbose),
             signer: find_signer(config.get_account_id()),
             contract: config.contract.clone(),
         }

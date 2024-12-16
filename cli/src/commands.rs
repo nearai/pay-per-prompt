@@ -31,6 +31,7 @@ pub async fn open_payment_channel_command(
         .await;
 
     let channel = Channel {
+        channel_id,
         receiver: details,
         sender,
         sender_secret_key: sk,
@@ -53,6 +54,6 @@ pub fn config_command(mut config: Config, update: &ConfigUpdate) {
     }
     config.save();
 
-    println!("Config updated");
+    println!("\nConfig updated:");
     serde_json::to_writer_pretty(std::io::stdout(), &config).unwrap();
 }
