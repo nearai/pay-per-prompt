@@ -1,7 +1,7 @@
 use clap::Parser;
 use commands::{
     close_command, close_payload_command, config_command, info_command,
-    open_payment_channel_command, send_command, withdraw_command,
+    open_payment_channel_command, send_command, topup_command, withdraw_command,
 };
 use config::{data_storage, Config, ConfigUpdate};
 use near_sdk::NearToken;
@@ -21,10 +21,12 @@ enum Commands {
         /// Amount to deposit in the payment channel.
         amount: NearToken,
     },
-    /// List all payment channels opened on this device.
-    List,
     /// Add extra balance to the payment channel.
-    Topup,
+    Topup {
+        channel_id: Option<String>,
+        #[arg(short, long)]
+        amount: NearToken,
+    },
     /// Close payment channel.
     Close {
         channel_id: Option<String>,
@@ -101,12 +103,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Open { amount } => {
             open_payment_channel_command(&config, amount).await?;
         }
-        Commands::List => {
-            println!("List")
-        }
-        Commands::Topup => {
-            println!("Topup")
-        }
+        Commands::Topup { channel_id, amount } => topup_command(&config, channel_id, amount).await,
         Commands::Close {
             channel_id,
             payload,

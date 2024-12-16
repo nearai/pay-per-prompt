@@ -121,4 +121,17 @@ impl Contract {
             )
             .await;
     }
+
+    pub async fn topup(&self, channel_id: &str, amount: NearToken) {
+        self.client
+            .change_call(
+                &self.signer,
+                self.contract.clone(),
+                "topup",
+                json!({"channel_id": channel_id}),
+                Gas::from_tgas(15),
+                amount,
+            )
+            .await;
+    }
 }

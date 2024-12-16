@@ -63,7 +63,7 @@ pub fn config_command(mut config: Config, update: &ConfigUpdate) {
 
 pub async fn info_command(config: &Config, channel_id: Option<String>, update: bool) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let mut channel = Channel::load(channel_id.clone(), true);
+    let mut channel = Channel::load(&channel_id, true);
 
     if update {
         let contract = config.near_contract();
@@ -77,7 +77,17 @@ pub async fn info_command(config: &Config, channel_id: Option<String>, update: b
             }
 
             if updated_channel.is_closed() {
-                eprintln!("Channel {} is closed", channel_id);
+                eprintln!("Channel {} is closed. Removing it.", channel_id);
+                let source = crate::config::channel_file(&channel_id);
+                let target = crate::config::closed_channel_file(&channel_id);
+                let folder = target.parent().unwrap();
+                if !folder.exists() {
+                    std::fs::create_dir_all(folder).unwrap();
+                }
+
+                // Remove channel from local
+                std::fs::copy(&source, &target).unwrap();
+                std::fs::remove_file(&source).unwrap();
                 std::process::exit(1);
             }
 
@@ -97,7 +107,7 @@ pub async fn info_command(config: &Config, channel_id: Option<String>, update: b
 
 pub fn send_command(config: &Config, amount: NearToken, channel_id: Option<String>, update: bool) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let mut channel = Channel::load(channel_id, config.verbose);
+    let mut channel = Channel::load(&channel_id, config.verbose);
 
     let new_balance = channel.spent_balance.saturating_add(amount);
 
@@ -131,7 +141,7 @@ pub async fn withdraw_command(config: &Config, payload: String) {
     let raw = BASE64_STANDARD.decode(payload).unwrap();
     let state: SignedState = near_sdk::borsh::from_slice(&raw).unwrap();
 
-    let channel = Channel::load(state.state.channel_id.clone(), config.verbose);
+    let channel = Channel::load(&state.state.channel_id, config.verbose);
 
     if config.verbose {
         println!(
@@ -150,7 +160,7 @@ pub async fn withdraw_command(config: &Config, payload: String) {
 
 pub fn close_payload_command(config: &Config, channel_id: Option<String>) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let channel = Channel::load(channel_id.clone(), config.verbose);
+    let channel = Channel::load(&channel_id, config.verbose);
 
     let receiver_id = channel.receiver.account_id.clone();
     let signer: near_crypto::InMemorySigner = find_signer(receiver_id);
@@ -181,7 +191,7 @@ pub fn close_payload_command(config: &Config, channel_id: Option<String>) {
 
 pub async fn close_command(config: &Config, channel_id: Option<String>, payload: Option<String>) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let _ = Channel::load(channel_id.clone(), config.verbose);
+    let _ = Channel::load(&channel_id, config.verbose);
 
     let signed_state = if let Some(payload) = payload {
         let raw = BASE64_STANDARD.decode(payload);
@@ -193,4 +203,24 @@ pub async fn close_command(config: &Config, channel_id: Option<String>, payload:
 
     let contract = config.near_contract();
     contract.close(signed_state).await;
+
+    println!("\nChannel closed. Use `info` to check the channel was closed locally.")
+}
+
+pub async fn topup_command(config: &Config, channel_id: Option<String>, amount: NearToken) {
+    let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
+    let mut channel = Channel::load(&channel_id, config.verbose);
+
+    if channel.force_close_started.is_some() {
+        eprintln!("\nChannel is already closing\n");
+        std::process::exit(1);
+    }
+
+    let contract = config.near_contract();
+    contract.topup(&channel_id, amount).await;
+
+    channel.added_balance = channel.added_balance.saturating_add(amount);
+    channel.save(config.verbose);
+
+    println!("\nChannel topped up\n");
 }
