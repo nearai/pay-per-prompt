@@ -219,6 +219,10 @@ impl Contract {
         }
     }
 
+    pub fn channel(&self, channel_id: ChannelId) -> Option<Channel> {
+        self.channels.get(&channel_id).cloned()
+    }
+
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
