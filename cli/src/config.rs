@@ -1,5 +1,5 @@
 use clap::Parser;
-use near_sdk::AccountId;
+use near_sdk::{AccountId, NearToken};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -15,10 +15,14 @@ pub struct Config {
     pub contract: AccountId,
     // Url to the provider RPC
     pub provider_url: String,
+    // Url to NEAR RPC
+    pub near_rpc_url: String,
     // Account id of the user
     pub account_id: Option<AccountId>,
+    // Verbose mode
     #[serde(default, skip)]
     pub verbose: bool,
+    // Path to the config file
     #[serde(skip)]
     pub config_file: PathBuf,
 }
@@ -34,6 +38,7 @@ impl Default for Config {
         Self {
             contract: "staging.paymentchannel.near".to_string().parse().unwrap(),
             provider_url: "https://payperprompt.near.ai".to_string(),
+            near_rpc_url: "https://archival-rpc.mainnet.near.org/".to_string(),
             verbose: true,
             account_id: None,
             config_file: PathBuf::new(),
@@ -109,10 +114,40 @@ impl Config {
         } else {
             let details = serde_json::to_string_pretty(&details).unwrap();
             std::fs::write(&provider_file, details).unwrap();
+
+            if self.verbose {
+                println!("Provider information saved to {:?}", provider_file);
+            }
+        }
+    }
+
+    pub fn update_channel(&self, channel: &Channel) {
+        let channesl = data_storage().join("channels");
+        if !channesl.exists() {
+            std::fs::create_dir_all(&channesl).unwrap();
+        }
+
+        let channel_file = channesl.join(format!("{}.json", &channel.receiver.account_id));
+
+        let channel = serde_json::to_string_pretty(&channel).unwrap();
+        std::fs::write(&channel_file, channel).unwrap();
+
+        if self.verbose {
+            println!("Channel information saved to {:?}", channel_file);
         }
     }
 
     pub fn near_contract(&self) -> Contract {
         Contract::new(self)
     }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Channel {
+    pub receiver: Details,
+    pub sender: Details,
+    pub sender_secret_key: near_crypto::SecretKey,
+    pub spent_balance: NearToken,
+    pub added_balance: NearToken,
+    pub withdrawn_balance: NearToken,
 }

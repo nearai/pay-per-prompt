@@ -13,7 +13,7 @@ pub struct Contract {
 impl Contract {
     pub fn new(config: &Config) -> Self {
         Self {
-            client: Client::new(&config.provider_url),
+            client: Client::new(&config.near_rpc_url),
             signer: find_signer(config.get_account_id()),
             contract: config.contract.clone(),
         }
@@ -21,9 +21,9 @@ impl Contract {
 
     pub async fn open_payment_channel(
         &self,
-        channel_id: String,
-        receiver: Details,
-        sender: Details,
+        channel_id: &String,
+        receiver: &Details,
+        sender: &Details,
         amount: NearToken,
     ) {
         self.client

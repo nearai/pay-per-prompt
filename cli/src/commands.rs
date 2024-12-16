@@ -1,5 +1,5 @@
 use crate::{
-    config::{Config, ConfigUpdate},
+    config::{Channel, Config, ConfigUpdate},
     provider::{Details, Provider},
 };
 use near_sdk::{AccountId, NearToken};
@@ -27,8 +27,20 @@ pub async fn open_payment_channel_command(
 
     let near_contract = config.near_contract();
     near_contract
-        .open_payment_channel(channel_id, details, sender, amount)
+        .open_payment_channel(&channel_id, &details, &sender, amount)
         .await;
+
+    let channel = Channel {
+        receiver: details,
+        sender,
+        sender_secret_key: sk,
+        spent_balance: NearToken::from_yoctonear(0),
+        added_balance: NearToken::from_yoctonear(0),
+        withdrawn_balance: NearToken::from_yoctonear(0),
+    };
+
+    // Save channel information to local storage
+    config.update_channel(&channel);
 
     Ok(())
 }
