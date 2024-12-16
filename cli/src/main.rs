@@ -1,5 +1,7 @@
 use clap::Parser;
-use commands::{config_command, info_command, open_payment_channel_command, send_command};
+use commands::{
+    config_command, info_command, open_payment_channel_command, send_command, withdraw_command,
+};
 use config::{data_storage, Config, ConfigUpdate};
 use near_sdk::NearToken;
 use std::path::PathBuf;
@@ -41,7 +43,13 @@ enum Commands {
 #[derive(Parser, Clone)]
 enum AdvancedCommands {
     /// Withdraw balance, run this command from the point of view of the receiver.
-    Withdraw,
+    Withdraw {
+        /// Signed state created by the sender encoded in base64
+        payload: String,
+    },
+    ClosePayload {
+        channel_id: Option<String>,
+    },
     /// Start a force close of a payment channel.
     StartForceClose,
     /// Finish a force close of a payment channel.
@@ -106,7 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config_command(config, &update);
         }
         Commands::Advanced(advanced_commands) => match advanced_commands {
-            AdvancedCommands::Withdraw => println!("Withdraw"),
+            AdvancedCommands::Withdraw { payload } => withdraw_command(&config, payload).await,
+            AdvancedCommands::ClosePayload { channel_id } => println!("ClosePayload"),
             AdvancedCommands::StartForceClose => println!("StartForceClose"),
             AdvancedCommands::FinishForceClose => println!("FinishForceClose"),
             AdvancedCommands::Send {

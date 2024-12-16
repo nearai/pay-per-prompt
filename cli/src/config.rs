@@ -161,12 +161,20 @@ pub struct Channel {
 }
 
 impl Channel {
-    pub fn load(channel_id: String) -> Self {
+    pub fn load(channel_id: String, verbose: bool) -> Self {
         let channel_file = data_storage()
             .join("channels")
             .join(format!("{}.json", channel_id));
         let channel = std::fs::read_to_string(&channel_file).unwrap();
-        serde_json::from_str(&channel).unwrap()
+
+        let channel: Channel = serde_json::from_str(&channel).unwrap();
+        if verbose {
+            println!(
+                "\nChannel details:\n{}\n",
+                near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
+            );
+        }
+        channel
     }
 
     pub fn save(&self, verbose: bool) {

@@ -1,8 +1,9 @@
 use crate::{
-    config::{Channel, Config, ConfigUpdate},
+    config::{Channel, Config, ConfigUpdate, SignedState},
     provider::{Details, Provider},
     utils::find_only_channel_id,
 };
+use base64::{prelude::BASE64_STANDARD, Engine};
 use near_sdk::{AccountId, NearToken};
 
 pub async fn open_payment_channel_command(
@@ -62,14 +63,7 @@ pub fn config_command(mut config: Config, update: &ConfigUpdate) {
 
 pub async fn info_command(config: &Config, channel_id: Option<String>, update: bool) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let mut channel = Channel::load(channel_id.clone());
-
-    if config.verbose {
-        println!(
-            "\nChannel details:\n{}\n",
-            near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
-        );
-    }
+    let mut channel = Channel::load(channel_id.clone(), true);
 
     if update {
         let contract = config.near_contract();
@@ -88,14 +82,7 @@ pub async fn info_command(config: &Config, channel_id: Option<String>, update: b
 
 pub fn send_command(config: &Config, amount: NearToken, channel_id: Option<String>, update: bool) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let mut channel = Channel::load(channel_id);
-
-    if config.verbose {
-        println!(
-            "\nChannel details:\n{}\n",
-            near_sdk::serde_json::to_string_pretty(&channel.redacted()).unwrap()
-        );
-    }
+    let mut channel = Channel::load(channel_id, config.verbose);
 
     let new_balance = channel.spent_balance.saturating_add(amount);
 
@@ -122,4 +109,19 @@ pub fn send_command(config: &Config, amount: NearToken, channel_id: Option<Strin
     if update {
         channel.save(config.verbose);
     }
+}
+
+pub async fn withdraw_command(config: &Config, payload: String) {
+    let contract = config.near_contract();
+    let raw = BASE64_STANDARD.decode(payload).unwrap();
+    let state: SignedState = near_sdk::borsh::from_slice(&raw).unwrap();
+
+    if config.verbose {
+        println!(
+            "\nWithdrawing from the channel:\n{}\n",
+            serde_json::to_string_pretty(&state).unwrap()
+        );
+    }
+
+    contract.withdraw(state).await;
 }
