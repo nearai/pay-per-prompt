@@ -10,12 +10,14 @@ use near_sdk::{near, Gas, NearToken, Timestamp};
 use serde_json::json;
 
 #[near(serializers = [json])]
+#[derive(Clone, Debug)]
 pub struct ContractAccount {
     pub account_id: AccountId,
     pub public_key: PublicKey,
 }
 
 #[near(serializers = [json])]
+#[derive(Debug)]
 pub struct ContractChannel {
     pub receiver: ContractAccount,
     pub sender: ContractAccount,
@@ -36,6 +38,14 @@ impl Contract {
         Self {
             client: Client::new(&config.near_rpc_url, config.verbose),
             signer: find_signer(config.get_account_id()),
+            contract: config.contract.clone(),
+        }
+    }
+
+    pub fn new_with_signer(config: &Config, signer: InMemorySigner) -> Self {
+        Self {
+            client: Client::new(&config.near_rpc_url, config.verbose),
+            signer,
             contract: config.contract.clone(),
         }
     }
@@ -78,7 +88,7 @@ impl Contract {
             .await;
     }
 
-    pub async fn channel(&self, channel_id: &str) -> ContractChannel {
+    pub async fn channel(&self, channel_id: &str) -> Option<ContractChannel> {
         self.client
             .view_call(
                 self.contract.clone(),
