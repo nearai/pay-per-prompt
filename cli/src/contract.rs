@@ -1,8 +1,28 @@
-use crate::{client::Client, config::Config, provider::Details, utils::find_signer};
-use near_crypto::InMemorySigner;
+use crate::{
+    client::Client,
+    config::{Config, SignedState},
+    provider::Details,
+    utils::find_signer,
+};
+use near_crypto::{InMemorySigner, PublicKey};
 use near_primitives::types::AccountId;
-use near_sdk::{Gas, NearToken};
+use near_sdk::{near, Gas, NearToken, Timestamp};
 use serde_json::json;
+
+#[near(serializers = [json])]
+pub struct ContractAccount {
+    pub account_id: AccountId,
+    pub public_key: PublicKey,
+}
+
+#[near(serializers = [json])]
+pub struct ContractChannel {
+    pub receiver: ContractAccount,
+    pub sender: ContractAccount,
+    pub added_balance: NearToken,
+    pub withdrawn_balance: NearToken,
+    pub force_close_started: Option<Timestamp>,
+}
 
 pub struct Contract {
     client: Client,
@@ -21,7 +41,7 @@ impl Contract {
 
     pub async fn open_payment_channel(
         &self,
-        channel_id: &String,
+        channel_id: &str,
         receiver: &Details,
         sender: &Details,
         amount: NearToken,
@@ -36,9 +56,34 @@ impl Contract {
                     "receiver": receiver,
                     "sender": sender,
                 }),
+                // TODO: Adjust this amount (make sure it is enough)
                 Gas::from_tgas(40),
                 amount,
             )
             .await;
+    }
+
+    pub async fn withdraw(&self, state: SignedState) {
+        self.client
+            .change_call(
+                &self.signer,
+                self.contract.clone(),
+                "withdraw",
+                json!({"state" : state}),
+                // TODO: Adjust this amount (make sure it is enough)
+                Gas::from_tgas(40),
+                NearToken::from_yoctonear(0),
+            )
+            .await;
+    }
+
+    pub async fn channel(&self, channel_id: &str) -> ContractChannel {
+        self.client
+            .view_call(
+                self.contract.clone(),
+                "channel",
+                json!({"channel_id": channel_id}),
+            )
+            .await
     }
 }

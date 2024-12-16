@@ -1,5 +1,7 @@
 use clap::Parser;
-use commands::{config_command, open_payment_channel_command};
+use commands::{
+    config_command, info_command, open_payment_channel_command, send_command, withdraw_command,
+};
 use config::{data_storage, Config, ConfigUpdate};
 use near_sdk::NearToken;
 use std::path::PathBuf;
@@ -25,7 +27,11 @@ enum Commands {
     /// Close payment channel.
     Close,
     /// Show available information about user and payment channels.
-    Info,
+    Info {
+        channel_id: Option<String>,
+        #[arg(short, long)]
+        no_update: bool,
+    },
     /// Show and update configuration.
     #[command(subcommand)]
     Config(ConfigUpdate),
@@ -36,8 +42,28 @@ enum Commands {
 
 #[derive(Parser, Clone)]
 enum AdvancedCommands {
-    Withdraw,
-    ForceClose,
+    /// Withdraw balance, run this command from the point of view of the receiver.
+    Withdraw {
+        /// Signed state created by the sender encoded in base64
+        payload: String,
+    },
+    ClosePayload {
+        channel_id: Option<String>,
+    },
+    /// Start a force close of a payment channel.
+    StartForceClose,
+    /// Finish a force close of a payment channel.
+    FinishForceClose,
+    /// Sign transaction to send money to the receiver. (Off-chain)
+    Send {
+        /// How much money to send.
+        amount: NearToken,
+        /// Id of the channel. If it is not specified we look if there is only one channel and use it.
+        channel_id: Option<String>,
+        /// If `update` is true, the local instance of the channel will be updated.
+        #[arg(short, long)]
+        no_update: bool,
+    },
 }
 
 #[derive(Parser)]
@@ -78,13 +104,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Close => {
             println!("Close")
         }
-        Commands::Info => {
-            println!("Info")
+        Commands::Info {
+            channel_id,
+            no_update,
+        } => {
+            info_command(&config, channel_id, !no_update).await;
         }
         Commands::Config(update) => {
             config_command(config, &update);
         }
-        Commands::Advanced(advanced_commands) => println!("Advanced command"),
+        Commands::Advanced(advanced_commands) => match advanced_commands {
+            AdvancedCommands::Withdraw { payload } => withdraw_command(&config, payload).await,
+            AdvancedCommands::ClosePayload { channel_id } => println!("ClosePayload"),
+            AdvancedCommands::StartForceClose => println!("StartForceClose"),
+            AdvancedCommands::FinishForceClose => println!("FinishForceClose"),
+            AdvancedCommands::Send {
+                amount,
+                channel_id,
+                no_update,
+            } => {
+                send_command(&config, amount, channel_id, !no_update);
+            }
+        },
     }
 
     Ok(())
