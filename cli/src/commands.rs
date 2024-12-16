@@ -52,4 +52,7 @@ pub fn config_command(mut config: Config, update: &ConfigUpdate) {
         }
     }
     config.save();
+
+    println!("Config updated");
+    serde_json::to_writer_pretty(std::io::stdout(), &config).unwrap();
 }
