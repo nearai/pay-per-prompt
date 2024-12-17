@@ -7,3 +7,5 @@ src/openai
 data/
 stubs/
 .sqlx
+*.sqlite
+openapitools.json

@@ -1,5 +1,3 @@
-#![feature(const_trait_impl)]
-
 pub mod common;
 pub mod db;
 pub mod service;

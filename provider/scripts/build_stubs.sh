@@ -14,7 +14,7 @@ sudo openapi-generator-cli generate \
     --skip-validate-spec \
     --package-name openaiapi \
     -o ./stubs/openaiapi
-sudo chown -R user:users stubs/openaiapi
+sudo chown -R $(whoami) stubs/openaiapi
 
 # Generate client stubs
 sudo openapi-generator-cli generate \
@@ -23,7 +23,7 @@ sudo openapi-generator-cli generate \
     --skip-validate-spec \
     --package-name openaiclient \
     -o ./stubs/openaiclient
-sudo chown -R user:users stubs/openaiclient
+sudo chown -R $(whoami) stubs/openaiclient
 
 pushd stubs/openaiapi
 cargo fmt --all

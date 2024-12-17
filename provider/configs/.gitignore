@@ -1,0 +1,6 @@
+# Ignore everything but some selected files
+*
+!.gitignore
+!openai_openapi_full.yaml
+!openai_openapi.yaml
+!test_config.yaml
