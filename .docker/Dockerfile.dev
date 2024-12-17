@@ -69,7 +69,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 RUN rustup update
 
 # Install near cli
-ARG NEAR_CLI_VERSION=v0.16.1
+ARG NEAR_CLI_VERSION=v0.17.0
 RUN curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/near-cli-rs/releases/download/${NEAR_CLI_VERSION}/near-cli-rs-installer.sh | sh
 
 # Install sqlx cli
