@@ -16,6 +16,7 @@ near-jsonrpc-client = "0.15.1"
 near-jsonrpc-primitives = "0.28.0"
 near-primitives = "0.28.0"
 near-sdk = "5.7.0"
+reqwest = { version = "0.12.9", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1" }
 tokio = { version = "1.42.0", features = ["full"] }
