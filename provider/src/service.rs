@@ -9,19 +9,16 @@ use axum_extra::extract::CookieJar;
 use http::header;
 use http::Method;
 use http::StatusCode;
-use near_crypto::PublicKey;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::str::FromStr;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::error;
 use tracing::info;
 
 use crate::AccountInfoPublic;
 use crate::ProviderCtx;
-use crate::ProviderDb;
-use crate::{ModelInfo, Provider, ProviderConfig, BAD_REQUEST, FOUR_HUNDRED};
+use crate::SignedState;
+use crate::{ModelInfo, Provider, BAD_REQUEST, FOUR_HUNDRED};
 use openaiapi::apis::completions::{
     Completions, CreateCompletionResponse as CreateCompletionResponseAPI,
 };
@@ -35,14 +32,10 @@ use openaiapi::models::{
 
 use openaiclient::apis::completions_api::create_completion;
 use openaiclient::apis::configuration::Configuration;
-use openaiclient::models::{
-    CreateCompletionRequest as CreateCompletionRequestClient,
-    CreateCompletionResponse as CreateCompletionResponseClient,
-};
+use openaiclient::models::CreateCompletionRequest as CreateCompletionRequestClient;
 
-use near_crypto::{PublicKey as NearPublicKey, Signature as NearSignature};
+use near_crypto::Signature as NearSignature;
 use near_primitives::types::AccountId;
-use near_primitives::types::BlockReference;
 use near_sdk::json_types::U128;
 
 // Reminder: this is private information, do not expose or serialize this struct
@@ -86,7 +79,7 @@ impl ProviderBaseService {
             .route("/health", get(|| async { "OK" }))
             .route("/info", get(info_handler))
             .route("/pc/state/:channel_name", get(get_pc_state))
-            .route("/pc/state/:channel_name", post(update_pc_state))
+            .route("/pc/state", post(post_pc_signed_state))
             .with_state(self)
     }
 }
@@ -98,8 +91,8 @@ async fn info_handler(State(state): State<ProviderBaseService>) -> Json<AccountI
 async fn get_pc_state(
     State(state): State<ProviderBaseService>,
     Path(channel_name): Path<String>,
-) -> impl IntoResponse {
-    state
+) -> Result<impl IntoResponse, ProviderBaseServiceError> {
+    let result = state
         .ctx
         .get_pc_state(&channel_name)
         .await
@@ -109,112 +102,32 @@ async fn get_pc_state(
                 message: "Unable to get payment channel state".to_string(),
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
             }
-        })
-        .map(|value| {
-            value
-                .ok_or(ProviderBaseServiceError {
-                    message: "Payment channel not found".to_string(),
-                    status_code: StatusCode::NOT_FOUND,
-                })
-                .map(|value| (StatusCode::OK, Json(value)))
-        })
+        })?
+        .ok_or(ProviderBaseServiceError {
+            message: "Payment channel not found".to_string(),
+            status_code: StatusCode::NOT_FOUND,
+        })?;
+
+    Ok((StatusCode::OK, Json(result)))
 }
 
-#[derive(Deserialize)]
-pub struct UpdatePcStateRequest {
-    spent_balance: U128, // in yoctoNEAR
-    signature: String,
-}
-
-async fn update_pc_state(
+async fn post_pc_signed_state(
     State(state): State<ProviderBaseService>,
-    Path(sender_account_id): Path<AccountId>,
-    Json(body): Json<UpdatePcStateRequest>,
+    Json(signed_state): Json<SignedState>,
 ) -> impl IntoResponse {
-    // Parse the signature
-    let signature = match NearSignature::from_str(&body.signature) {
-        Ok(signature) => signature,
-        Err(_) => {
-            return (ProviderBaseServiceError {
-                message: format!(
-                    "Invalid signature format. Please provide a b58 encoded signature with a valid curve type (ed25519 or secp256k1)"
-                ),
-                status_code: StatusCode::BAD_REQUEST,
-            })
-            .into_response();
-        }
-    };
+    state
+        .ctx
+        .validate_insert_signed_state(&signed_state)
+        .await
+        .map_err(|e| {
+            error!("Unable to validate signed state: {:?}", e);
+            ProviderBaseServiceError {
+                message: "Unable to validate signed state".to_string(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })?;
 
-    // Get the channel state
-
-    // Get the account info, check if the account is valid
-    // and get all the public keys
-    // let rpc = state.ctx.near_network_config.json_rpc_client();
-    // let query_view_method_request = near_jsonrpc_client::methods::query::RpcQueryRequest {
-    //     block_reference: BlockReference::latest(),
-    //     request: near_primitives::views::QueryRequest::ViewAccessKeyList {
-    //         account_id: sender_account_id.clone(),
-    //     },
-    // };
-    // let account_info = match rpc.call(query_view_method_request).await {
-    //     Ok(rpc_response) => match rpc_response.access_key_list_view() {
-    //         Ok(access_key_list) => access_key_list,
-    //         Err(e) => {
-    //             error!("Unable to verify account {}: {:?}", sender_account_id, e);
-    //             return (ProviderBaseServiceError {
-    //                 message: format!("Unable to verify account {}", sender_account_id),
-    //                 status_code: StatusCode::BAD_REQUEST,
-    //             })
-    //             .into_response();
-    //         }
-    //     },
-    //     Err(e) => {
-    //         error!("Unable to verify account {}: {:?}", sender_account_id, e);
-    //         return (ProviderBaseServiceError {
-    //             message: format!(
-    //                 "Unable to verify account {} due to rpc error",
-    //                 sender_account_id
-    //             ),
-    //             status_code: StatusCode::BAD_REQUEST,
-    //         })
-    //         .into_response();
-    //     }
-    // };
-
-    // signed payload
-    // comma seperated string of the following:
-    // (channel_id, sender_account_id, spent_balance)
-    // let channel_name = body.channel_name.clone();
-    // let spent_balance = serde_json::to_string(&body.spent_balance.clone()).unwrap();
-    // let payload_raw = vec![channel_name, spent_balance];
-    // let payload = payload_raw.join(",");
-    // let payload_bytes = payload.as_bytes();
-
-    // println!("payload: {}", payload);
-    // println!("signature: {}", signature);
-    // println!("account_info: {:?}", account_info);
-
-    // // first byte contains CurveType, so we're removing it
-    // let verified_pk = match account_info
-    //     .keys
-    //     .into_iter()
-    //     .map(|key| key.public_key)
-    //     .find(|pk| signature.verify(payload_bytes, pk))
-    // {
-    //     Some(pk) => pk,
-    //     None => {
-    //         return (ProviderBaseServiceError {
-    //             message: format!(
-    //                 "Bad signature. Cannot find valid public key for {} to verify the payload",
-    //                 sender_account_id
-    //             ),
-    //             status_code: StatusCode::BAD_REQUEST,
-    //         })
-    //         .into_response();
-    //     }
-    // };
-
-    (StatusCode::OK, Json("OK")).into_response()
+    (StatusCode::CREATED, Json(signed_state))
 }
 
 #[derive(Clone)]
