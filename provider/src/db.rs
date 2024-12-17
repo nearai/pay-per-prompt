@@ -5,6 +5,8 @@ use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
 use tracing::info;
 
+use crate::SignedState;
+
 #[derive(Default, Debug, sqlx::FromRow)]
 pub struct ChannelRow {
     pub id: i64,
@@ -212,6 +214,29 @@ impl ProviderDb {
             )),
             None => Err(sqlx::Error::RowNotFound),
         }
+    }
+
+    pub async fn insert_signed_state(
+        &self,
+        signed_state: &SignedState,
+    ) -> Result<SignedStateRow, sqlx::Error> {
+        let spent_balance = signed_state.state.spent_balance.0.to_be_bytes().to_vec();
+        let signed_state_row = sqlx::query_as!(
+            SignedStateRow,
+            r#"
+            INSERT INTO signed_state
+            (channel_id, spent_balance, signature)
+            VALUES (?, ?, ?)
+            RETURNING *
+            "#,
+            signed_state.state.channel_name,
+            spent_balance,
+            signed_state.signature
+        )
+        .fetch_one(&self.connection)
+        .await?;
+
+        Ok(signed_state_row)
     }
 
     pub async fn latest_signed_state(
