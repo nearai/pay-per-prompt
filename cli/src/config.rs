@@ -137,15 +137,15 @@ impl Config {
 #[near(serializers = [borsh, json])]
 #[derive(Debug)]
 pub struct State {
-    channel_id: String,
-    spent_balance: NearToken,
+    pub channel_id: String,
+    pub spent_balance: NearToken,
 }
 
 #[near(serializers = [borsh, json])]
 #[derive(Debug)]
 pub struct SignedState {
-    state: State,
-    signature: near_crypto::Signature,
+    pub state: State,
+    pub signature: near_crypto::Signature,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -160,11 +160,21 @@ pub struct Channel {
     pub force_close_started: Option<near_sdk::Timestamp>,
 }
 
+pub fn channel_file(channel_id: &str) -> PathBuf {
+    data_storage()
+        .join("channels")
+        .join(format!("{}.json", channel_id))
+}
+
+pub fn closed_channel_file(channel_id: &str) -> PathBuf {
+    data_storage()
+        .join("closed-channels")
+        .join(format!("{}.json", channel_id))
+}
+
 impl Channel {
-    pub fn load(channel_id: String, verbose: bool) -> Self {
-        let channel_file = data_storage()
-            .join("channels")
-            .join(format!("{}.json", channel_id));
+    pub fn load(channel_id: &str, verbose: bool) -> Self {
+        let channel_file = channel_file(&channel_id);
         let channel = std::fs::read_to_string(&channel_file).unwrap();
 
         let channel: Channel = serde_json::from_str(&channel).unwrap();

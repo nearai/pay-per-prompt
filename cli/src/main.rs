@@ -1,6 +1,7 @@
 use clap::Parser;
 use commands::{
-    config_command, info_command, open_payment_channel_command, send_command, withdraw_command,
+    close_command, close_payload_command, config_command, info_command,
+    open_payment_channel_command, send_command, topup_command, withdraw_command,
 };
 use config::{data_storage, Config, ConfigUpdate};
 use near_sdk::NearToken;
@@ -20,12 +21,20 @@ enum Commands {
         /// Amount to deposit in the payment channel.
         amount: NearToken,
     },
-    /// List all payment channels opened on this device.
-    List,
     /// Add extra balance to the payment channel.
-    Topup,
+    Topup {
+        channel_id: Option<String>,
+        #[arg(short, long)]
+        amount: NearToken,
+    },
     /// Close payment channel.
-    Close,
+    Close {
+        channel_id: Option<String>,
+        /// Manual payload to close the channel, if not specified we
+        /// ask the provider to generate it.
+        #[arg(short, long)]
+        payload: Option<String>,
+    },
     /// Show available information about user and payment channels.
     Info {
         channel_id: Option<String>,
@@ -47,9 +56,8 @@ enum AdvancedCommands {
         /// Signed state created by the sender encoded in base64
         payload: String,
     },
-    ClosePayload {
-        channel_id: Option<String>,
-    },
+    /// Receiver generates the closing payload.
+    ClosePayload { channel_id: Option<String> },
     /// Start a force close of a payment channel.
     StartForceClose,
     /// Finish a force close of a payment channel.
@@ -95,15 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::Open { amount } => {
             open_payment_channel_command(&config, amount).await?;
         }
-        Commands::List => {
-            println!("List")
-        }
-        Commands::Topup => {
-            println!("Topup")
-        }
-        Commands::Close => {
-            println!("Close")
-        }
+        Commands::Topup { channel_id, amount } => topup_command(&config, channel_id, amount).await,
+        Commands::Close {
+            channel_id,
+            payload,
+        } => close_command(&config, channel_id, payload).await,
         Commands::Info {
             channel_id,
             no_update,
@@ -115,7 +119,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Advanced(advanced_commands) => match advanced_commands {
             AdvancedCommands::Withdraw { payload } => withdraw_command(&config, payload).await,
-            AdvancedCommands::ClosePayload { channel_id } => println!("ClosePayload"),
+            AdvancedCommands::ClosePayload { channel_id } => {
+                close_payload_command(&config, channel_id)
+            }
             AdvancedCommands::StartForceClose => println!("StartForceClose"),
             AdvancedCommands::FinishForceClose => println!("FinishForceClose"),
             AdvancedCommands::Send {

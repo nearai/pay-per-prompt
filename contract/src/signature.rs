@@ -1,6 +1,8 @@
 use near_sdk::borsh::{BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 
+const PREFIX: &str = "ed25519:";
+
 pub struct Signature {
     signature: [u8; 64],
 }
@@ -30,7 +32,14 @@ impl Serialize for Signature {
     where
         S: near_sdk::serde::Serializer,
     {
-        serializer.serialize_str(bs58::encode(self.signature.as_ref()).into_string().as_str())
+        serializer.serialize_str(
+            [
+                PREFIX,
+                bs58::encode(self.signature.as_ref()).into_string().as_str(),
+            ]
+            .concat()
+            .as_str(),
+        )
     }
 }
 
@@ -40,6 +49,12 @@ impl<'de> Deserialize<'de> for Signature {
         D: near_sdk::serde::Deserializer<'de>,
     {
         let s = <std::string::String as Deserialize>::deserialize(deserializer)?;
+        if !s.starts_with(PREFIX) {
+            return Err(near_sdk::serde::de::Error::custom(
+                "Invalid signature prefix",
+            ));
+        }
+        let s = s.trim_start_matches(PREFIX);
         let signature = bs58::decode(s)
             .into_vec()
             .map_err(near_sdk::serde::de::Error::custom)?;

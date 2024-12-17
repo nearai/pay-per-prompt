@@ -66,12 +66,9 @@ impl SignedState {
     fn verify(&self, pk: &PublicKey) -> bool {
         let message = to_vec(&self.state).unwrap();
         let pk_raw = pk.as_bytes();
-
-        env::ed25519_verify(
-            self.signature.as_ref(),
-            message.as_ref(),
-            pk_raw.try_into().unwrap(),
-        )
+        assert!(pk_raw[0] == 0, "Invalid public key");
+        let pk_raw_32: [u8; 32] = pk_raw[1..].try_into().unwrap();
+        env::ed25519_verify(self.signature.as_ref(), message.as_ref(), &pk_raw_32)
     }
 }
 
