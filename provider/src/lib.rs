@@ -9,3 +9,5 @@ pub use crate::service::*;
 pub const MODEL_DELIMITER: &str = "::";
 pub const BAD_REQUEST: &str = "Bad Request";
 pub const FOUR_HUNDRED: &str = "400";
+
+pub const PAYMENTS_HEADER_NAME: &str = "X-Payments-Signature";
