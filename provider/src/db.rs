@@ -239,6 +239,11 @@ impl ProviderDb {
         &self,
         signed_state: &SignedState,
     ) -> Result<SignedStateRow, sqlx::Error> {
+        let channel_row = self
+            .get_channel_row(&signed_state.state.channel_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)?;
+
         let spent_balance = signed_state
             .state
             .spent_balance
@@ -254,7 +259,7 @@ impl ProviderDb {
             VALUES (?, ?, ?)
             RETURNING *
             "#,
-            signed_state.state.channel_id,
+            channel_row.id,
             spent_balance,
             signature
         )

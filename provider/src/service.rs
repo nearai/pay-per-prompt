@@ -127,7 +127,7 @@ async fn post_pc_signed_state(
         .map_err(|e| {
             error!("Unable to validate signed state: {:?}", e);
             ProviderBaseServiceError {
-                message: "Unable to validate signed state".to_string(),
+                message: format!("Unable to validate signed state: {}", e),
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
