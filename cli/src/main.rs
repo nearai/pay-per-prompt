@@ -1,18 +1,11 @@
 use clap::Parser;
-use commands::{
+use cli::commands::{
     close_command, close_payload_command, config_command, info_command,
     open_payment_channel_command, send_command, topup_command, withdraw_command,
 };
-use config::{data_storage, Config, ConfigUpdate};
+use cli::config::{data_storage, Config, ConfigUpdate};
 use near_sdk::NearToken;
 use std::path::PathBuf;
-
-mod client;
-mod commands;
-mod config;
-mod contract;
-mod provider;
-mod utils;
 
 #[derive(Parser, Clone)]
 enum Commands {

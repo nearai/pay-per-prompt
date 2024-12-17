@@ -1,7 +1,6 @@
 use near_crypto::PublicKey;
 use near_sdk::AccountId;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
 
 use crate::config::SignedState;
 
@@ -29,7 +28,7 @@ impl Provider {
         Ok(details)
     }
 
-    pub async fn close_payload(&self, channel_id: &str) -> SignedState {
+    pub async fn close_payload(&self, _channel_id: &str) -> SignedState {
         // TODO: Call provider to get close payload
         todo!()
     }
