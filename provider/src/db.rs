@@ -2,7 +2,6 @@ use cli::{
     config::SignedState,
     contract::{Contract as NearPaymentChannelContractClient, ContractChannel},
 };
-use near_primitives::types::AccountId;
 use near_sdk::{json_types::U128, NearToken};
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;

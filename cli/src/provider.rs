@@ -19,17 +19,21 @@ impl Provider {
         Self { provider_url }
     }
 
-    pub async fn receiver_details(&self) -> Result<Details, Box<dyn std::error::Error>> {
-        let details: Details = reqwest::get(format!("{}/info", self.provider_url))
-            .await?
-            .json()
-            .await?;
-
-        Ok(details)
+    pub async fn receiver_details(&self) -> Details {
+        reqwest::get(format!("{}/info", self.provider_url))
+            .await
+            .unwrap()
+            .json::<Details>()
+            .await
+            .unwrap()
     }
 
-    pub async fn close_payload(&self, _channel_id: &str) -> SignedState {
-        // TODO: Call provider to get close payload
-        todo!()
+    pub async fn close_payload(&self, channel_id: &str) -> SignedState {
+        reqwest::get(format!("{}/pc/close/{}", self.provider_url, channel_id))
+            .await
+            .unwrap()
+            .json::<SignedState>()
+            .await
+            .unwrap()
     }
 }

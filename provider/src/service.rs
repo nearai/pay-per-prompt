@@ -80,6 +80,7 @@ impl ProviderBaseService {
         Router::new()
             .route("/health", get(|| async { "OK" }))
             .route("/info", get(info_handler))
+            .route("/pc/close/:channel_name", get(close_handler))
             .route("/pc/state/:channel_name", get(get_pc_state))
             .route("/pc/state", post(post_pc_signed_state))
             .with_state(self)
@@ -88,6 +89,13 @@ impl ProviderBaseService {
 
 async fn info_handler(State(state): State<ProviderBaseService>) -> Json<AccountInfoPublic> {
     Json(state.ctx.public_account_info().await)
+}
+
+async fn close_handler(
+    State(state): State<ProviderBaseService>,
+    Path(channel_name): Path<String>,
+) -> Json<SignedState> {
+    Json(state.ctx.close_pc(&channel_name).await.unwrap())
 }
 
 async fn get_pc_state(

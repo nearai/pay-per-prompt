@@ -14,7 +14,7 @@ pub async fn open_payment_channel_command(
     let provider = Provider::new(config.provider_url.clone());
 
     // Fetch provider details and update local storage with the new information
-    let details = provider.receiver_details().await?;
+    let details = provider.receiver_details().await;
     config.update_provider(&details);
 
     // Generate new key pair for the channel

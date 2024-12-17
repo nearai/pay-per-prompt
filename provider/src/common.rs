@@ -5,7 +5,10 @@ use anyhow::Error;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use borsh::to_vec;
 use borsh::{BorshDeserialize, BorshSerialize};
-use cli::config::{Config as NearPaymentChannelContractClientConfig, SignedState};
+use cli::config::{
+    Config as NearPaymentChannelContractClientConfig, SignedState as NearSignedState,
+    State as NearState,
+};
 use cli::contract::Contract as NearPaymentChannelContractClient;
 use near_cli_rs::common::KeyPairProperties;
 use near_cli_rs::config::Config as NearConfig;
@@ -20,6 +23,7 @@ use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::AccountId;
 use near_primitives::types::BlockReference;
 use near_sdk::json_types::U128;
+use near_sdk::NearToken;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
@@ -257,7 +261,7 @@ impl ProviderCtx {
 
     pub async fn validate_insert_signed_state(
         &self,
-        signed_state: &SignedState,
+        signed_state: &NearSignedState,
     ) -> Result<(), anyhow::Error> {
         match self
             .db
@@ -322,6 +326,39 @@ impl ProviderCtx {
                 self.db.insert_signed_state(signed_state).await?;
 
                 Ok(())
+            }
+        }
+    }
+
+    pub async fn close_pc(&self, channel_name: &str) -> Result<NearSignedState, anyhow::Error> {
+        println!("Close pc");
+
+        match self.db.get_channel_row_or_refresh(channel_name).await? {
+            None => Err(anyhow::anyhow!("Channel not found")),
+            Some(channel_row) => {
+                println!("Close pc -- here");
+                // Check if there is the sender has spent money that we haven't withdrawn yet
+                if let Some(signed_state) = self.db.latest_signed_state(channel_name).await? {
+                    // Check the amount of money available is large enough so that it makes sense to withdraw it
+                    if signed_state
+                        .spent_balance()
+                        .saturating_sub(channel_row.withdraw_balance())
+                        > NearToken::from_str("0.01N").unwrap()
+                    {
+                        // TODO: Withdraw balance from the contract
+                    }
+                }
+
+                let state = NearState {
+                    channel_id: channel_name.to_string(),
+                    spent_balance: NearToken::from_yoctonear(0),
+                };
+
+                let message = borsh::to_vec(&state).unwrap();
+                let signer = self._account_info.read().await.as_signer();
+                let signature = signer.sign(&message);
+
+                Ok(NearSignedState { state, signature })
             }
         }
     }
