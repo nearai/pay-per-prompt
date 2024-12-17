@@ -2,11 +2,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Error;
+use borsh::to_vec;
+use borsh::{BorshDeserialize, BorshSerialize};
 use cli::config::Config as NearPaymentChannelContractClientConfig;
 use cli::contract::Contract as NearPaymentChannelContractClient;
-use near_cli_rs::common::JsonRpcClientExt;
 use near_cli_rs::common::KeyPairProperties;
-use near_cli_rs::common::RpcQueryResponseExt;
 use near_cli_rs::config::Config as NearConfig;
 use near_cli_rs::config::NetworkConfig as NearNetworkConfig;
 use near_crypto::InMemorySigner;
@@ -16,7 +16,6 @@ use near_crypto::{
 };
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
-use near_primitives::account::AccessKey;
 use near_primitives::types::AccountId;
 use near_primitives::types::BlockReference;
 use near_sdk::json_types::U128;
@@ -136,10 +135,15 @@ impl AccountInfoPrivate {
     }
 }
 
-#[derive(Clone, Serialize)]
-pub struct SignedState {
+#[derive(Clone, Serialize, BorshSerialize)]
+pub struct State {
     pub channel_name: String,
     pub spent_balance: U128,
+}
+
+#[derive(Clone, Serialize)]
+pub struct SignedState {
+    pub state: State,
     pub signature: String,
 }
 
@@ -268,7 +272,7 @@ impl ProviderCtx {
     ) -> Result<(), anyhow::Error> {
         match self
             .db
-            .get_channel_row_or_refresh(&signed_state.channel_name)
+            .get_channel_row_or_refresh(&signed_state.state.channel_name)
             .await?
         {
             None => Err(anyhow::anyhow!("Channel not found")),
@@ -278,6 +282,65 @@ impl ProviderCtx {
 
                 let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk)
                     .map_err(|e| anyhow::anyhow!("Invalid public key format: {}", e))?;
+
+                // validate signature with public key
+                let data = to_vec(&signed_state.state)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize state: {}", e))?;
+                let signature_valid = signature.verify(&data, &sender_public_key);
+                if !signature_valid {
+                    return Err(anyhow::anyhow!("Invalid signature"));
+                }
+
+                // Check that the user is monotonically increasing their spent balance
+                let most_recent_spent_balance = match self
+                    .db
+                    .latest_signed_state(&signed_state.state.channel_name)
+                    .await?
+                {
+                    Some(signed_state) => u128::from_be_bytes(
+                        signed_state.spent_balance[..].try_into().unwrap_or([0; 16]),
+                    ),
+                    None => 0_u128,
+                };
+                let new_spent_balance = signed_state.state.spent_balance.0;
+                if new_spent_balance <= most_recent_spent_balance {
+                    return Err(anyhow::anyhow!(
+                        "New spent balance is less than or equal to the most recent spent balance"
+                    ));
+                }
+
+                // Check that the users new spend balance is not greater than the added balance.
+                // If it is, resync the channel and check again (unhappy path)
+                // If it still is, tell the user they need to top up the channel
+                let added_balance = u128::from_be_bytes(
+                    channel_row.added_balance[..].try_into().unwrap_or([0; 16]),
+                );
+                if new_spent_balance > added_balance {
+                    // in case the channel is out of sync with the blockchain, resync and check again
+                    match self
+                        .db
+                        .refresh_channel_row(&signed_state.state.channel_name)
+                        .await?
+                    {
+                        Some(channel_row) => {
+                            let resynced_spent_balance = u128::from_be_bytes(
+                                channel_row.added_balance[..].try_into().unwrap_or([0; 16]),
+                            );
+                            if new_spent_balance > resynced_spent_balance {
+                                return Err(anyhow::anyhow!(
+                                    "New spent balance is greater than the added balance by {} units. Please top up the channel.",
+                                    new_spent_balance - resynced_spent_balance
+                                ));
+                            }
+                        }
+                        None => {
+                            return Err(anyhow::anyhow!("Channel not found"));
+                        }
+                    }
+                }
+
+                self.db.insert_signed_state(signed_state).await?;
+
                 Ok(())
             }
         }
