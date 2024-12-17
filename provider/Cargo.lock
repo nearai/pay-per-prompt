@@ -3709,6 +3709,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-extra",
+ "borsh",
  "bytes",
  "chrono",
  "clap",

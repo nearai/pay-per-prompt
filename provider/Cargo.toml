@@ -47,3 +47,4 @@ sqlx = { version = "0.8.2", features = [ "runtime-tokio", "tls-native-tls", "sql
 chrono = { version = "0.4.39", features = ["serde"] }
 
 cli = { path = "../cli" }
+borsh = "1.5.3"
