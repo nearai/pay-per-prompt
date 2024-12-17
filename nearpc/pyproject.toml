@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "lib"
+name = "nearpc"
 version = "0.1.0"
 description = ""
 authors = ["Marcelo Fornet <mfornet94@gmail.com>"]
