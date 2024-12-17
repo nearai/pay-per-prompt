@@ -135,13 +135,13 @@ impl AccountInfoPrivate {
     }
 }
 
-#[derive(Clone, Serialize, BorshSerialize)]
+#[derive(Clone, Serialize, BorshSerialize, Deserialize)]
 pub struct State {
     pub channel_name: String,
     pub spent_balance: U128,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SignedState {
     pub state: State,
     pub signature: String,

@@ -114,7 +114,7 @@ async fn get_pc_state(
 async fn post_pc_signed_state(
     State(state): State<ProviderBaseService>,
     Json(signed_state): Json<SignedState>,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, ProviderBaseServiceError> {
     state
         .ctx
         .validate_insert_signed_state(&signed_state)
@@ -127,7 +127,7 @@ async fn post_pc_signed_state(
             }
         })?;
 
-    (StatusCode::CREATED, Json(signed_state))
+    Ok((StatusCode::CREATED, Json(signed_state)))
 }
 
 #[derive(Clone)]
