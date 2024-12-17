@@ -331,12 +331,9 @@ impl ProviderCtx {
     }
 
     pub async fn close_pc(&self, channel_name: &str) -> Result<NearSignedState, anyhow::Error> {
-        println!("Close pc");
-
         match self.db.get_channel_row_or_refresh(channel_name).await? {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
-                println!("Close pc -- here");
                 // Check if there is the sender has spent money that we haven't withdrawn yet
                 if let Some(signed_state) = self.db.latest_signed_state(channel_name).await? {
                     // Check the amount of money available is large enough so that it makes sense to withdraw it
@@ -357,6 +354,8 @@ impl ProviderCtx {
                 let message = borsh::to_vec(&state).unwrap();
                 let signer = self._account_info.read().await.as_signer();
                 let signature = signer.sign(&message);
+
+                // TODO: Update db reflecting that the channel is now closed
 
                 Ok(NearSignedState { state, signature })
             }
