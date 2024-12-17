@@ -1,9 +1,11 @@
 #![feature(const_trait_impl)]
 
-pub mod config;
+pub mod common;
+pub mod db;
 pub mod service;
 
-pub use crate::config::*;
+pub use crate::common::*;
+pub use crate::db::*;
 pub use crate::service::*;
 
 pub const MODEL_DELIMITER: &str = "::";
