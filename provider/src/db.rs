@@ -1,11 +1,12 @@
-use cli::contract::{Contract as NearPaymentChannelContractClient, ContractChannel};
+use cli::{
+    config::SignedState,
+    contract::{Contract as NearPaymentChannelContractClient, ContractChannel},
+};
 use near_primitives::types::AccountId;
-use near_sdk::json_types::U128;
+use near_sdk::{json_types::U128, NearToken};
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
 use tracing::info;
-
-use crate::SignedState;
 
 #[derive(Default, Debug, sqlx::FromRow)]
 pub struct ChannelRow {
@@ -21,6 +22,20 @@ pub struct ChannelRow {
     pub withdraw_balance: Vec<u8>,
 }
 
+impl ChannelRow {
+    pub fn added_balance(&self) -> NearToken {
+        NearToken::from_yoctonear(u128::from_be_bytes(
+            self.added_balance[..].try_into().unwrap_or([0; 16]),
+        ))
+    }
+
+    pub fn withdraw_balance(&self) -> NearToken {
+        NearToken::from_yoctonear(u128::from_be_bytes(
+            self.withdraw_balance[..].try_into().unwrap_or([0; 16]),
+        ))
+    }
+}
+
 impl Serialize for ChannelRow {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -29,12 +44,8 @@ impl Serialize for ChannelRow {
         use serde::ser::SerializeStruct;
 
         // Convert balance Vec<u8> to u128
-        let added_balance = U128::from(u128::from_be_bytes(
-            self.added_balance[..].try_into().unwrap_or([0; 16]),
-        ));
-        let withdraw_balance = U128::from(u128::from_be_bytes(
-            self.withdraw_balance[..].try_into().unwrap_or([0; 16]),
-        ));
+        let added_balance = U128::from(self.added_balance().as_yoctonear());
+        let withdraw_balance = U128::from(self.withdraw_balance().as_yoctonear());
 
         let mut state = serializer.serialize_struct("Channel", 8)?;
         state.serialize_field("id", &self.id)?;
@@ -56,6 +67,14 @@ pub struct SignedStateRow {
     pub channel_id: i64,
     pub spent_balance: Vec<u8>,
     pub signature: String,
+}
+
+impl SignedStateRow {
+    pub fn spent_balance(&self) -> NearToken {
+        NearToken::from_yoctonear(u128::from_be_bytes(
+            self.spent_balance[..].try_into().unwrap_or([0; 16]),
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -220,7 +239,13 @@ impl ProviderDb {
         &self,
         signed_state: &SignedState,
     ) -> Result<SignedStateRow, sqlx::Error> {
-        let spent_balance = signed_state.state.spent_balance.0.to_be_bytes().to_vec();
+        let spent_balance = signed_state
+            .state
+            .spent_balance
+            .as_yoctonear()
+            .to_be_bytes()
+            .to_vec();
+        let signature = signed_state.signature.to_string();
         let signed_state_row = sqlx::query_as!(
             SignedStateRow,
             r#"
@@ -229,9 +254,9 @@ impl ProviderDb {
             VALUES (?, ?, ?)
             RETURNING *
             "#,
-            signed_state.state.channel_name,
+            signed_state.state.channel_id,
             spent_balance,
-            signed_state.signature
+            signature
         )
         .fetch_one(&self.connection)
         .await?;

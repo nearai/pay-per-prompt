@@ -2,9 +2,10 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Error;
+use base64::{prelude::BASE64_STANDARD, Engine};
 use borsh::to_vec;
 use borsh::{BorshDeserialize, BorshSerialize};
-use cli::config::Config as NearPaymentChannelContractClientConfig;
+use cli::config::{Config as NearPaymentChannelContractClientConfig, SignedState};
 use cli::contract::Contract as NearPaymentChannelContractClient;
 use near_cli_rs::common::KeyPairProperties;
 use near_cli_rs::config::Config as NearConfig;
@@ -141,12 +142,6 @@ pub struct State {
     pub spent_balance: U128,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SignedState {
-    pub state: State,
-    pub signature: String,
-}
-
 #[derive(Clone, Serialize)]
 pub struct PaymentChannelState {
     pub channel_name: String,
@@ -244,25 +239,19 @@ impl ProviderCtx {
         // Get the spent balance from the latest signed state
         // If no signed state is found, the spent balance is 0
         let spent_balance = match self.db.latest_signed_state(channel_name).await? {
-            Some(signed_state) => U128::from(u128::from_be_bytes(
-                signed_state.spent_balance[..].try_into().unwrap_or([0; 16]),
-            )),
+            Some(signed_state) => U128::from(signed_state.spent_balance().as_yoctonear()),
             None => U128::from(0),
         };
 
+        let added_balance = channel_row.added_balance();
+        let withdraw_balance = channel_row.withdraw_balance();
         Ok(Some(PaymentChannelState {
             channel_name: channel_row.name,
             sender: channel_row.sender,
             receiver: channel_row.receiver,
             spent_balance,
-            added_balance: U128::from(u128::from_be_bytes(
-                channel_row.added_balance[..].try_into().unwrap_or([0; 16]),
-            )),
-            withdraw_balance: U128::from(u128::from_be_bytes(
-                channel_row.withdraw_balance[..]
-                    .try_into()
-                    .unwrap_or([0; 16]),
-            )),
+            added_balance: U128::from(added_balance.as_yoctonear()),
+            withdraw_balance: U128::from(withdraw_balance.as_yoctonear()),
         }))
     }
 
@@ -272,22 +261,18 @@ impl ProviderCtx {
     ) -> Result<(), anyhow::Error> {
         match self
             .db
-            .get_channel_row_or_refresh(&signed_state.state.channel_name)
+            .get_channel_row_or_refresh(&signed_state.state.channel_id)
             .await?
         {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
-                let signature_raw = BASE64_STANDARD.decode(&signed_state.signature).unwrap();
-                let signature = NearSignature::from_str(&signature_raw).map_err(
-                    |e| anyhow::anyhow!("Invalid signature format. Please provide a b58 encoded signature with a valid curve type (ed25519 or secp256k1): {}", e))?;
-
                 let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk)
                     .map_err(|e| anyhow::anyhow!("Invalid public key format: {}", e))?;
 
                 // validate signature with public key
                 let data = to_vec(&signed_state.state)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize state: {}", e))?;
-                let signature_valid = signature.verify(&data, &sender_public_key);
+                let signature_valid = signed_state.signature.verify(&data, &sender_public_key);
                 if !signature_valid {
                     return Err(anyhow::anyhow!("Invalid signature"));
                 }
@@ -295,15 +280,13 @@ impl ProviderCtx {
                 // Check that the user is monotonically increasing their spent balance
                 let most_recent_spent_balance = match self
                     .db
-                    .latest_signed_state(&signed_state.state.channel_name)
+                    .latest_signed_state(&signed_state.state.channel_id)
                     .await?
                 {
-                    Some(signed_state) => u128::from_be_bytes(
-                        signed_state.spent_balance[..].try_into().unwrap_or([0; 16]),
-                    ),
+                    Some(signed_state) => signed_state.spent_balance().as_yoctonear(),
                     None => 0_u128,
                 };
-                let new_spent_balance = signed_state.state.spent_balance.0;
+                let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
                 if new_spent_balance <= most_recent_spent_balance {
                     return Err(anyhow::anyhow!(
                         "New spent balance is less than or equal to the most recent spent balance"
@@ -313,20 +296,16 @@ impl ProviderCtx {
                 // Check that the users new spend balance is not greater than the added balance.
                 // If it is, resync the channel and check again (unhappy path)
                 // If it still is, tell the user they need to top up the channel
-                let added_balance = u128::from_be_bytes(
-                    channel_row.added_balance[..].try_into().unwrap_or([0; 16]),
-                );
+                let added_balance = channel_row.added_balance().as_yoctonear();
                 if new_spent_balance > added_balance {
                     // in case the channel is out of sync with the blockchain, resync and check again
                     match self
                         .db
-                        .refresh_channel_row(&signed_state.state.channel_name)
+                        .refresh_channel_row(&signed_state.state.channel_id)
                         .await?
                     {
                         Some(channel_row) => {
-                            let resynced_spent_balance = u128::from_be_bytes(
-                                channel_row.added_balance[..].try_into().unwrap_or([0; 16]),
-                            );
+                            let resynced_spent_balance = channel_row.added_balance().as_yoctonear();
                             if new_spent_balance > resynced_spent_balance {
                                 return Err(anyhow::anyhow!(
                                     "New spent balance is greater than the added balance by {} units. Please top up the channel.",

@@ -6,6 +6,9 @@ use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use axum_extra::extract::CookieJar;
+use base64::{prelude::BASE64_STANDARD, Engine};
+
+use cli::config::SignedState;
 use http::header;
 use http::Method;
 use http::StatusCode;
@@ -17,7 +20,6 @@ use tracing::info;
 
 use crate::AccountInfoPublic;
 use crate::ProviderCtx;
-use crate::SignedState;
 use crate::{ModelInfo, Provider, BAD_REQUEST, FOUR_HUNDRED};
 use openaiapi::apis::completions::{
     Completions, CreateCompletionResponse as CreateCompletionResponseAPI,
@@ -113,8 +115,11 @@ async fn get_pc_state(
 
 async fn post_pc_signed_state(
     State(state): State<ProviderBaseService>,
-    Json(signed_state): Json<SignedState>,
+    body: String,
 ) -> Result<impl IntoResponse, ProviderBaseServiceError> {
+    let decoded_payload = BASE64_STANDARD.decode(&body).unwrap();
+    let signed_state: SignedState = borsh::from_slice(&decoded_payload).unwrap();
+
     state
         .ctx
         .validate_insert_signed_state(&signed_state)
