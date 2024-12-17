@@ -1,5 +1,6 @@
+use near_crypto::{InMemorySigner, SecretKey};
 use near_sdk::AccountId;
-use std::path::PathBuf;
+use std::{path::PathBuf, str::FromStr};
 
 use crate::config::{data_storage, Channel};
 
@@ -22,8 +23,18 @@ fn find_on_path(path: PathBuf, target: &str) -> Option<PathBuf> {
 pub fn find_signer(account_id: AccountId) -> near_crypto::InMemorySigner {
     let path = dirs::home_dir().unwrap().join(".near-credentials");
     find_on_path(path, &format!("{}.json", account_id))
-        .and_then(|path| near_crypto::InMemorySigner::from_file(&path).ok())
+        .map(|path| load_memory_signer(account_id, path))
         .unwrap()
+}
+
+fn load_memory_signer(account_id: AccountId, path: PathBuf) -> InMemorySigner {
+    let value =
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+    let sk = value.get("private_key").unwrap().as_str().unwrap();
+    let sk = SecretKey::from_str(sk).unwrap();
+
+    InMemorySigner::from_secret_key(account_id, sk)
 }
 
 pub fn find_only_channel_id() -> String {
