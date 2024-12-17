@@ -15,6 +15,7 @@ path = "src/lib.rs"
 [dependencies]
 clap = { version = "4.4.11", features = ["derive"] }
 bytes = "1"
+anyhow = "1.0.94"
 http = "1"
 config = "0.14.0"
 async-trait = "0.1"
@@ -26,7 +27,7 @@ tracing = { version = "0.1", features = ["attributes"] }
 uuid = { version = "1", features = ["serde"] }
 axum-extra = { version = "0.9", features = ["cookie", "multipart"] }
 tracing-subscriber = "0.3.18"
-tokio = { version = "1", default-features = false, features = [
+tokio = { version = "1.42.0", default-features = false, features = [
   "signal",
   "rt-multi-thread",
 ] }
@@ -34,17 +35,15 @@ tower-http = { version = "0.6.2", features = ["full"] }
 
 openaiapi = { version = "2.0.0", path = "stubs/openaiapi", features = ["server"] }
 openaiclient = { version = "2.0.0", path = "stubs/openaiclient"}
-anyhow = "1.0.94"
+
+near-crypto = "0.28.0"
+near-jsonrpc-client = "0.15.1"
+near-jsonrpc-primitives = "0.28.0"
+near-primitives = "0.28.0"
+near-sdk = "5.7.0"
 near-cli-rs = "0.16.1"
-near-crypto = "0.27.0"
-near-primitives = "0.27.0"
-near-jsonrpc-client = "0.14"
 
 sqlx = { version = "0.8.2", features = [ "runtime-tokio", "tls-native-tls", "sqlite", "chrono" ] }
-syn = "2.0.90"
-quote = "1.0.37"
-sqlxinsert = "0.11.0"
 chrono = { version = "0.4.39", features = ["serde"] }
-near-sdk = "5.7.0"
 
 cli = { path = "../cli" }
