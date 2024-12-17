@@ -277,7 +277,8 @@ impl ProviderCtx {
         {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
-                let signature = NearSignature::from_str(&signed_state.signature).map_err(
+                let signature_raw = BASE64_STANDARD.decode(&signed_state.signature).unwrap();
+                let signature = NearSignature::from_str(&signature_raw).map_err(
                     |e| anyhow::anyhow!("Invalid signature format. Please provide a b58 encoded signature with a valid curve type (ed25519 or secp256k1): {}", e))?;
 
                 let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk)
