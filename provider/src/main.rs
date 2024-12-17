@@ -12,7 +12,7 @@ use tower_http::{
 };
 use tracing::info;
 
-use provider::{ProviderBaseService, ProviderConfig, ProviderOaiService};
+use provider::{ProviderBaseService, ProviderConfig, ProviderCtx, ProviderOaiService};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -31,7 +31,7 @@ pub struct RunCli {
     #[clap(long, default_value = "127.0.0.1")]
     host: Ipv4Addr,
 
-    #[clap(long, default_value = "8080")]
+    #[clap(long, default_value = "8000")]
     port: u16,
 
     #[clap(long)]
@@ -57,13 +57,16 @@ pub async fn start_server(addr: &str, args: RunCli) {
                 }
             }
         }
-        None => ProviderConfig::default(),
+        None => panic!("No config file provided"),
     };
 
+    info!("Creating common provider context");
+    let ctx = ProviderCtx::new(provider_model_config.clone());
+
     info!("Starting Provider API");
-    let provider_base = ProviderBaseService::new();
+    let provider_base = ProviderBaseService::new(ctx.clone());
     let provider_base_service = ProviderBaseService::router(provider_base);
-    let provider_oai = ProviderOaiService::new(provider_model_config.clone());
+    let provider_oai = ProviderOaiService::new(ctx.clone());
     let provider_oai_service = server::new(provider_oai);
     let app = axum::Router::new()
         .layer(DefaultBodyLimit::disable())
@@ -78,7 +81,6 @@ pub async fn start_server(addr: &str, args: RunCli) {
         // All requests that prefix /oai will go here
         .layer(RequestBodyLimitLayer::new(500 * 1000 * 1000)) // 500MB
         .nest("/", provider_oai_service)
-        .layer(DefaultBodyLimit::disable())
         .nest("/", provider_base_service);
 
     let listener = TcpListener::bind(addr).await.unwrap();

@@ -1,11 +1,26 @@
 use async_trait::async_trait;
 use axum::extract::*;
+use axum::response::IntoResponse;
 use axum::routing::get;
+use axum::routing::post;
+use axum::Json;
 use axum::Router;
 use axum_extra::extract::CookieJar;
+use http::header;
 use http::Method;
+use http::StatusCode;
+use near_crypto::PublicKey;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::str::FromStr;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::error;
 use tracing::info;
 
+use crate::AccountInfoPublic;
+use crate::ProviderCtx;
+use crate::ProviderDb;
 use crate::{ModelInfo, Provider, ProviderConfig, BAD_REQUEST, FOUR_HUNDRED};
 use openaiapi::apis::completions::{
     Completions, CreateCompletionResponse as CreateCompletionResponseAPI,
@@ -19,25 +34,39 @@ use openaiapi::models::{
 };
 
 use openaiclient::apis::completions_api::create_completion;
-use openaiclient::apis::configuration::{ApiKey, Configuration};
+use openaiclient::apis::configuration::Configuration;
 use openaiclient::models::{
     CreateCompletionRequest as CreateCompletionRequestClient,
     CreateCompletionResponse as CreateCompletionResponseClient,
 };
 
-#[derive(Clone)]
-pub struct ProviderBaseService {}
+use near_crypto::{PublicKey as NearPublicKey, Signature as NearSignature};
+use near_primitives::types::AccountId;
+use near_primitives::types::BlockReference;
+use near_sdk::json_types::U128;
 
-impl ProviderBaseService {
-    pub fn new() -> Self {
-        info!("Creating ProviderBaseService");
-        Self {}
+// Reminder: this is private information, do not expose or serialize this struct
+
+#[derive(Debug)]
+pub struct ProviderBaseServiceError {
+    pub message: String,
+    pub status_code: StatusCode,
+}
+
+impl IntoResponse for ProviderBaseServiceError {
+    fn into_response(self) -> axum::response::Response {
+        (
+            self.status_code,
+            [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+            Json(json!({ "message": self.message })),
+        )
+            .into_response()
     }
-    pub fn router(self) -> axum::Router {
-        Router::new()
-            .route("/health", get(|| async { "OK" }))
-            .with_state(self)
-    }
+}
+
+#[derive(Clone)]
+pub struct ProviderBaseService {
+    ctx: ProviderCtx,
 }
 
 impl AsRef<ProviderBaseService> for ProviderBaseService {
@@ -46,15 +75,165 @@ impl AsRef<ProviderBaseService> for ProviderBaseService {
     }
 }
 
+impl ProviderBaseService {
+    pub fn new(ctx: ProviderCtx) -> Self {
+        info!("Creating ProviderBaseService");
+        Self { ctx }
+    }
+
+    pub fn router(self) -> axum::Router {
+        Router::new()
+            .route("/health", get(|| async { "OK" }))
+            .route("/info", get(info_handler))
+            .route("/pc/state/:channel_name", get(get_pc_state))
+            .route("/pc/state/:channel_name", post(update_pc_state))
+            .with_state(self)
+    }
+}
+
+async fn info_handler(State(state): State<ProviderBaseService>) -> Json<AccountInfoPublic> {
+    Json(state.ctx.public_account_info().await)
+}
+
+async fn get_pc_state(
+    State(state): State<ProviderBaseService>,
+    Path(channel_name): Path<String>,
+) -> impl IntoResponse {
+    state
+        .ctx
+        .get_pc_state(&channel_name)
+        .await
+        .map_err(|e| {
+            error!("Unable to get payment channel state: {:?}", e);
+            ProviderBaseServiceError {
+                message: "Unable to get payment channel state".to_string(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            }
+        })
+        .map(|value| {
+            value
+                .ok_or(ProviderBaseServiceError {
+                    message: "Payment channel not found".to_string(),
+                    status_code: StatusCode::NOT_FOUND,
+                })
+                .map(|value| (StatusCode::OK, Json(value)))
+        })
+}
+
+#[derive(Deserialize)]
+pub struct UpdatePcStateRequest {
+    spent_balance: U128, // in yoctoNEAR
+    signature: String,
+}
+
+async fn update_pc_state(
+    State(state): State<ProviderBaseService>,
+    Path(sender_account_id): Path<AccountId>,
+    Json(body): Json<UpdatePcStateRequest>,
+) -> impl IntoResponse {
+    // Parse the signature
+    let signature = match NearSignature::from_str(&body.signature) {
+        Ok(signature) => signature,
+        Err(_) => {
+            return (ProviderBaseServiceError {
+                message: format!(
+                    "Invalid signature format. Please provide a b58 encoded signature with a valid curve type (ed25519 or secp256k1)"
+                ),
+                status_code: StatusCode::BAD_REQUEST,
+            })
+            .into_response();
+        }
+    };
+
+    // Get the channel state
+
+    // Get the account info, check if the account is valid
+    // and get all the public keys
+    // let rpc = state.ctx.near_network_config.json_rpc_client();
+    // let query_view_method_request = near_jsonrpc_client::methods::query::RpcQueryRequest {
+    //     block_reference: BlockReference::latest(),
+    //     request: near_primitives::views::QueryRequest::ViewAccessKeyList {
+    //         account_id: sender_account_id.clone(),
+    //     },
+    // };
+    // let account_info = match rpc.call(query_view_method_request).await {
+    //     Ok(rpc_response) => match rpc_response.access_key_list_view() {
+    //         Ok(access_key_list) => access_key_list,
+    //         Err(e) => {
+    //             error!("Unable to verify account {}: {:?}", sender_account_id, e);
+    //             return (ProviderBaseServiceError {
+    //                 message: format!("Unable to verify account {}", sender_account_id),
+    //                 status_code: StatusCode::BAD_REQUEST,
+    //             })
+    //             .into_response();
+    //         }
+    //     },
+    //     Err(e) => {
+    //         error!("Unable to verify account {}: {:?}", sender_account_id, e);
+    //         return (ProviderBaseServiceError {
+    //             message: format!(
+    //                 "Unable to verify account {} due to rpc error",
+    //                 sender_account_id
+    //             ),
+    //             status_code: StatusCode::BAD_REQUEST,
+    //         })
+    //         .into_response();
+    //     }
+    // };
+
+    // signed payload
+    // comma seperated string of the following:
+    // (channel_id, sender_account_id, spent_balance)
+    // let channel_name = body.channel_name.clone();
+    // let spent_balance = serde_json::to_string(&body.spent_balance.clone()).unwrap();
+    // let payload_raw = vec![channel_name, spent_balance];
+    // let payload = payload_raw.join(",");
+    // let payload_bytes = payload.as_bytes();
+
+    // println!("payload: {}", payload);
+    // println!("signature: {}", signature);
+    // println!("account_info: {:?}", account_info);
+
+    // // first byte contains CurveType, so we're removing it
+    // let verified_pk = match account_info
+    //     .keys
+    //     .into_iter()
+    //     .map(|key| key.public_key)
+    //     .find(|pk| signature.verify(payload_bytes, pk))
+    // {
+    //     Some(pk) => pk,
+    //     None => {
+    //         return (ProviderBaseServiceError {
+    //             message: format!(
+    //                 "Bad signature. Cannot find valid public key for {} to verify the payload",
+    //                 sender_account_id
+    //             ),
+    //             status_code: StatusCode::BAD_REQUEST,
+    //         })
+    //         .into_response();
+    //     }
+    // };
+
+    (StatusCode::OK, Json("OK")).into_response()
+}
+
 #[derive(Clone)]
 pub struct ProviderOaiService {
-    config: ProviderConfig,
+    ctx: ProviderCtx,
 }
 
 impl ProviderOaiService {
-    pub fn new(config: ProviderConfig) -> Self {
+    pub fn new(ctx: ProviderCtx) -> Self {
         info!("Creating ProviderOaiService");
-        Self { config }
+        info!(
+            "Available providers: {:?}",
+            ctx.config
+                .providers
+                .iter()
+                .map(|p| p.canonical_name.clone())
+                .collect::<Vec<_>>()
+        );
+        Self { ctx }
     }
 }
 
@@ -91,9 +270,9 @@ impl Models for ProviderOaiService {
     /// ListModels - GET /oai/models
     async fn list_models(
         &self,
-        method: Method,
-        host: Host,
-        cookies: CookieJar,
+        _method: Method,
+        _host: Host,
+        _cookies: CookieJar,
     ) -> Result<ListModelsResponse, ()> {
         Ok(ListModelsResponse::Status500_InternalServerError(
             Error::new(
@@ -152,6 +331,7 @@ impl Completions for ProviderOaiService {
 
         // Get the provider from the config
         let provider: &Provider = match self
+            .ctx
             .config
             .providers
             .iter()
