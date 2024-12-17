@@ -10,7 +10,10 @@ use crate::{
 };
 
 pub fn data_storage() -> PathBuf {
-    dirs::config_dir().unwrap().join("near_payment_channel")
+    dirs::home_dir()
+        .unwrap()
+        .join(".config")
+        .join("near_payment_channel")
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -40,7 +43,7 @@ pub enum ConfigUpdate {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            contract: "staging.paymentchannel.near".to_string().parse().unwrap(),
+            contract: "paymentchannel.near".to_string().parse().unwrap(),
             provider_url: "https://payperprompt.near.ai".to_string(),
             near_rpc_url: "https://archival-rpc.mainnet.near.org/".to_string(),
             verbose: true,
