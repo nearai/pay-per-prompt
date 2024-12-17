@@ -1,0 +1,8 @@
+providers:
+  - canonical_name: "fireworks"
+    url: "https://api.fireworks.ai/inference/v1"
+    api_key: "..."
+network: "mainnet"
+account_id: "..."
+db_url: "sqlite://db.sqlite?mode=rwc"
+payment_channel_contract: "..."

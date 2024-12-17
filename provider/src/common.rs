@@ -1,0 +1,285 @@
+use std::str::FromStr;
+use std::sync::Arc;
+
+use anyhow::Error;
+use cli::config::Config as NearPaymentChannelContractClientConfig;
+use cli::contract::Contract as NearPaymentChannelContractClient;
+use near_cli_rs::common::JsonRpcClientExt;
+use near_cli_rs::common::KeyPairProperties;
+use near_cli_rs::common::RpcQueryResponseExt;
+use near_cli_rs::config::Config as NearConfig;
+use near_cli_rs::config::NetworkConfig as NearNetworkConfig;
+use near_crypto::InMemorySigner;
+use near_crypto::Signer;
+use near_crypto::{
+    PublicKey as NearPublicKey, SecretKey as NearSecretKey, Signature as NearSignature,
+};
+use near_jsonrpc_client::JsonRpcClient;
+use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::account::AccessKey;
+use near_primitives::types::AccountId;
+use near_primitives::types::BlockReference;
+use near_sdk::json_types::U128;
+use serde::Deserialize;
+use serde::Serialize;
+use tokio::sync::RwLock;
+use tracing::info;
+
+use crate::{ProviderDb, MODEL_DELIMITER};
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct ProviderConfig {
+    pub providers: Vec<Provider>,
+    pub account_id: AccountId,
+    pub network: String,
+    pub db_url: String,
+}
+
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct Provider {
+    pub canonical_name: String,
+    pub url: String,
+    pub api_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ModelInfo {
+    pub provider: String,
+    pub model_name: String,
+}
+
+impl ModelInfo {
+    pub fn new(provider: String, model_name: String) -> Self {
+        Self {
+            provider,
+            model_name,
+        }
+    }
+
+    pub fn from_str(input: &str) -> anyhow::Result<ModelInfo> {
+        if let Some((provider, model_name)) = input.split_once(MODEL_DELIMITER) {
+            let provider = provider.trim();
+            let model_name = model_name.trim();
+            if provider.is_empty() || model_name.is_empty() {
+                return Err(Error::msg(
+                    "Invalid input format. Provider or model name cannot be empty.",
+                ));
+            }
+            Ok(ModelInfo {
+                provider: provider.to_string(),
+                model_name: model_name.to_string(),
+            })
+        } else {
+            Err(Error::msg(
+                "Invalid input format. Expected exactly one '::' delimiter.",
+            ))
+        }
+    }
+}
+
+// Reminder: this is private information, do not expose or serialize this struct
+#[derive(Deserialize)]
+pub struct AccountInfoPrivate {
+    pub account_id: AccountId,
+    pub network_config: NearNetworkConfig,
+    pub public_key: NearPublicKey,
+    pub private_key: NearSecretKey,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AccountInfoPublic {
+    pub account_id: AccountId,
+    pub network: String,
+    pub public_key: NearPublicKey,
+}
+
+impl AccountInfoPrivate {
+    pub fn new(
+        credentials_home_dir: &std::path::Path,
+        account_id: AccountId,
+        network_config: NearNetworkConfig,
+    ) -> Self {
+        // Get the key pair from the credentials home dir
+        let file_name = format!("{}.json", account_id);
+        let mut path = std::path::PathBuf::from(credentials_home_dir);
+        path.push(network_config.network_name.clone());
+        path.push(file_name);
+        let data = std::fs::read_to_string(&path).expect("Access key file not found!");
+        let key_pair: KeyPairProperties =
+            serde_json::from_str(&data).expect("Error reading data from file");
+        let private_key = NearSecretKey::from_str(&key_pair.secret_keypair_str)
+            .expect("Error reading data from file");
+        let public_key = NearPublicKey::from_str(&key_pair.public_key_str)
+            .expect("Error reading data from file");
+
+        Self {
+            account_id,
+            network_config,
+            public_key,
+            private_key,
+        }
+    }
+
+    pub fn public_view(&self) -> AccountInfoPublic {
+        AccountInfoPublic {
+            account_id: self.account_id.clone(),
+            network: self.network_config.network_name.clone(),
+            public_key: self.public_key.clone(),
+        }
+    }
+
+    pub fn as_signer(&self) -> Signer {
+        Signer::InMemory(InMemorySigner::from_secret_key(
+            self.account_id.clone(),
+            self.private_key.clone(),
+        ))
+    }
+}
+
+#[derive(Clone, Serialize)]
+pub struct SignedState {
+    pub channel_name: String,
+    pub spent_balance: U128,
+    pub signature: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct PaymentChannelState {
+    pub channel_name: String,
+    pub sender: String,
+    pub receiver: String,
+    pub spent_balance: U128,
+    pub added_balance: U128,
+    pub withdraw_balance: U128,
+}
+
+#[derive(Clone)]
+pub struct ProviderCtx {
+    pub config: ProviderConfig,
+    pub db: ProviderDb,
+    pub pc_client: NearPaymentChannelContractClient,
+    _account_info: Arc<RwLock<AccountInfoPrivate>>,
+}
+
+impl ProviderCtx {
+    pub fn new(config: ProviderConfig) -> Self {
+        info!("Loading near config with network: {}", config.network);
+        let near_config = NearConfig::default();
+        let near_network_config = near_config
+            .network_connection
+            .get(&config.network.clone())
+            .expect(&format!("Network not found: {}", config.network))
+            .clone();
+
+        info!("Loading account info: {}", config.account_id);
+        let account_info = AccountInfoPrivate::new(
+            &near_config.credentials_home_dir,
+            config.account_id.clone(),
+            near_network_config.clone(),
+        );
+
+        info!("Validating account info");
+        let also_account_id = config.account_id.clone();
+        let also_near_network_config = near_network_config.clone();
+        let result = std::thread::spawn(move || {
+            let rpc = JsonRpcClient::connect(also_near_network_config.rpc_url.as_ref());
+            let query_view_method_request = near_jsonrpc_client::methods::query::RpcQueryRequest {
+                block_reference: BlockReference::latest(),
+                request: near_primitives::views::QueryRequest::ViewAccount {
+                    account_id: also_account_id.clone(),
+                },
+            };
+            let result = tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(rpc.call(query_view_method_request))
+                .unwrap();
+            match result.kind {
+                QueryResponseKind::ViewAccount(account_view) => account_view,
+                _ => unreachable!(),
+            }
+        });
+        result.join().expect("Thread panicked");
+
+        info!("Creating payment channel client");
+        let mut pc_client_config = NearPaymentChannelContractClientConfig::default();
+        pc_client_config.account_id = Some(config.account_id.clone());
+        let pc_client = NearPaymentChannelContractClient::new_with_signer(
+            &pc_client_config,
+            InMemorySigner::from_secret_key(
+                account_info.account_id.clone(),
+                account_info.private_key.clone(),
+            ),
+        );
+
+        info!("Creating database");
+        let db = ProviderDb::new(&config.db_url, pc_client.clone());
+
+        Self {
+            config,
+            db,
+            pc_client,
+            _account_info: Arc::new(RwLock::new(account_info)),
+        }
+    }
+
+    pub async fn public_account_info(&self) -> AccountInfoPublic {
+        self._account_info.read().await.public_view()
+    }
+
+    pub async fn get_pc_state(
+        &self,
+        channel_name: &str,
+    ) -> Result<Option<PaymentChannelState>, sqlx::Error> {
+        let channel_row =
+            if let Some(row) = self.db.get_channel_row_or_refresh(channel_name).await? {
+                row
+            } else {
+                return Ok(None);
+            };
+
+        // Get the spent balance from the latest signed state
+        // If no signed state is found, the spent balance is 0
+        let spent_balance = match self.db.latest_signed_state(channel_name).await? {
+            Some(signed_state) => U128::from(u128::from_be_bytes(
+                signed_state.spent_balance[..].try_into().unwrap_or([0; 16]),
+            )),
+            None => U128::from(0),
+        };
+
+        Ok(Some(PaymentChannelState {
+            channel_name: channel_row.name,
+            sender: channel_row.sender,
+            receiver: channel_row.receiver,
+            spent_balance,
+            added_balance: U128::from(u128::from_be_bytes(
+                channel_row.added_balance[..].try_into().unwrap_or([0; 16]),
+            )),
+            withdraw_balance: U128::from(u128::from_be_bytes(
+                channel_row.withdraw_balance[..]
+                    .try_into()
+                    .unwrap_or([0; 16]),
+            )),
+        }))
+    }
+
+    pub async fn validate_insert_signed_state(
+        &self,
+        signed_state: &SignedState,
+    ) -> Result<(), anyhow::Error> {
+        match self
+            .db
+            .get_channel_row_or_refresh(&signed_state.channel_name)
+            .await?
+        {
+            None => Err(anyhow::anyhow!("Channel not found")),
+            Some(channel_row) => {
+                let signature = NearSignature::from_str(&signed_state.signature).map_err(
+                    |e| anyhow::anyhow!("Invalid signature format. Please provide a b58 encoded signature with a valid curve type (ed25519 or secp256k1): {}", e))?;
+
+                let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk)
+                    .map_err(|e| anyhow::anyhow!("Invalid public key format: {}", e))?;
+                Ok(())
+            }
+        }
+    }
+}
