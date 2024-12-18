@@ -2,9 +2,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Error;
-use base64::{prelude::BASE64_STANDARD, Engine};
 use borsh::to_vec;
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::BorshSerialize;
 use cli::config::{
     Config as NearPaymentChannelContractClientConfig, SignedState as NearSignedState,
     State as NearState,
@@ -14,10 +13,9 @@ use near_cli_rs::common::KeyPairProperties;
 use near_cli_rs::config::Config as NearConfig;
 use near_cli_rs::config::NetworkConfig as NearNetworkConfig;
 use near_crypto::InMemorySigner;
+use near_crypto::Signature;
 use near_crypto::Signer;
-use near_crypto::{
-    PublicKey as NearPublicKey, SecretKey as NearSecretKey, Signature as NearSignature,
-};
+use near_crypto::{PublicKey as NearPublicKey, SecretKey as NearSecretKey};
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::AccountId;
@@ -350,16 +348,26 @@ impl ProviderCtx {
         match self.db.get_channel_row_or_refresh(channel_name).await? {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
+                info!("Closing channel: {}", channel_name);
+
                 // Check if there is the sender has spent money that we haven't withdrawn yet
                 if let Some(signed_state) = self.db.latest_signed_state(channel_name).await? {
-                    // Check the amount of money available is large enough so that it makes sense to withdraw it
-                    if signed_state
-                        .spent_balance()
-                        .saturating_sub(channel_row.withdraw_balance())
-                        > NearToken::from_str("0.01N").unwrap()
-                    {
-                        // TODO: Withdraw balance from the contract
-                    }
+                    info!(
+                        "There is a signed state: {:?}",
+                        signed_state.spent_balance()
+                    );
+                    // TODO: Check the amount of money available is large enough so that it makes sense to withdraw it
+                    let state = NearSignedState {
+                        state: NearState {
+                            channel_id: channel_row.name.clone(),
+                            spent_balance: signed_state.spent_balance(),
+                        },
+                        signature: Signature::from_str(&signed_state.signature).unwrap(),
+                    };
+
+                    info!("Withdrawing: {:?}", state);
+
+                    self.pc_client.withdraw(state).await;
                 }
 
                 let state = NearState {
