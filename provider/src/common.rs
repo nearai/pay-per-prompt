@@ -37,6 +37,7 @@ pub struct ProviderConfig {
     pub account_id: AccountId,
     pub network: String,
     pub db_url: String,
+    pub cost_per_completion: U128,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -261,6 +262,7 @@ impl ProviderCtx {
 
     pub async fn validate_insert_signed_state(
         &self,
+        min_cost: u128,
         signed_state: &NearSignedState,
     ) -> Result<(), anyhow::Error> {
         match self
@@ -270,10 +272,12 @@ impl ProviderCtx {
         {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
+                // Get the sender public key registered in the channel
                 let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk)
                     .map_err(|e| anyhow::anyhow!("Invalid public key format: {}", e))?;
 
-                // validate signature with public key
+                // validate signature with the senders public key
+                // this assumes that the sender is the only one who can sign the state
                 let data = to_vec(&signed_state.state)
                     .map_err(|e| anyhow::anyhow!("Failed to serialize state: {}", e))?;
                 let signature_valid = signed_state.signature.verify(&data, &sender_public_key);
@@ -281,7 +285,7 @@ impl ProviderCtx {
                     return Err(anyhow::anyhow!("Invalid signature"));
                 }
 
-                // Check that the user is monotonically increasing their spent balance
+                // Check that the sender is monotonically increasing their spent balance
                 let most_recent_spent_balance = match self
                     .db
                     .latest_signed_state(&signed_state.state.channel_id)
@@ -294,6 +298,16 @@ impl ProviderCtx {
                 if new_spent_balance <= most_recent_spent_balance {
                     return Err(anyhow::anyhow!(
                         "New spent balance is less than or equal to the most recent spent balance"
+                    ));
+                }
+
+                // Check that the sender has authorized an amount above the minimum cost
+                let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
+                let prev_spend_balance = most_recent_spent_balance;
+                if new_spent_balance < prev_spend_balance + min_cost {
+                    return Err(anyhow::anyhow!(
+                        "New spent balance is less than the minimum cost of {} yoctoNEAR",
+                        min_cost
                     ));
                 }
 
