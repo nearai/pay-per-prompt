@@ -21,11 +21,17 @@ class NearPC:
     def __init__(
         self,
         *,
-        provider_url: str = "http://payperprompt.near.ai",
+        provider_url: str | None = None,
         channel_id: str | None = None,
     ):
         if channel_id is None:
             channel_id = get_only_channel()
+
+        if provider_url is None:
+            provider_url = os.environ.get("PROVIDER_URL")
+
+        if provider_url is None:
+            provider_url = "http://payperprompt.near.ai"
 
         self.provider_url = provider_url
         self.channel_id = channel_id
