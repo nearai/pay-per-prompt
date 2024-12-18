@@ -348,28 +348,23 @@ impl ProviderCtx {
         match self.db.get_channel_row_or_refresh(channel_name).await? {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
-                info!("Closing channel: {}", channel_name);
+                info!("Closing channel: {}", channel_row.name);
 
                 // Check if there is the sender has spent money that we haven't withdrawn yet
-                if let Some(signed_state) = self.db.latest_signed_state(channel_name).await? {
+                if let Some(signed_state) = self.db.latest_signed_state(&channel_row.name).await? {
                     info!(
                         "There is a signed state: {:?}",
                         signed_state.spent_balance()
                     );
                     // TODO: Check the amount of money available is large enough so that it makes sense to withdraw it
-                    let state = NearSignedState {
-                        state: NearState {
-                            channel_id: channel_row.name.clone(),
-                            spent_balance: signed_state.spent_balance(),
-                        },
-                        signature: Signature::from_str(&signed_state.signature).unwrap(),
-                    };
+                    let state: NearSignedState = signed_state.into();
 
                     info!("Withdrawing: {:?}", state);
 
                     self.pc_client.withdraw(state).await;
                 }
 
+                // Payload to send to user to close the channel
                 let state = NearState {
                     channel_id: channel_name.to_string(),
                     spent_balance: NearToken::from_yoctonear(0),

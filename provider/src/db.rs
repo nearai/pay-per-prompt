@@ -1,7 +1,10 @@
+use std::str::FromStr;
+
 use cli::{
-    config::SignedState,
+    config::{SignedState, State},
     contract::{Contract as NearPaymentChannelContractClient, ContractChannel},
 };
+use near_crypto::Signature;
 use near_sdk::{json_types::U128, NearToken};
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
@@ -73,6 +76,18 @@ impl SignedStateRow {
         NearToken::from_yoctonear(u128::from_be_bytes(
             self.spent_balance[..].try_into().unwrap_or([0; 16]),
         ))
+    }
+}
+
+impl Into<SignedState> for SignedStateRow {
+    fn into(self) -> SignedState {
+        SignedState {
+            state: State {
+                channel_id: self.channel_id.to_string(),
+                spent_balance: self.spent_balance(),
+            },
+            signature: Signature::from_str(&self.signature).unwrap(),
+        }
     }
 }
 
