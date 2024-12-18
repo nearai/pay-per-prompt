@@ -5,7 +5,7 @@ use cli::{
 use near_sdk::{json_types::U128, NearToken};
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Default, Debug, sqlx::FromRow)]
 pub struct ChannelRow {
@@ -110,6 +110,11 @@ impl ProviderDb {
         .fetch_optional(&self.connection)
         .await?;
 
+        if channel.is_none() {
+            warn!("Channel {} not found in database", channel_name);
+        } else {
+            info!("Channel {} retrieved from database", channel_name);
+        }
         Ok(channel)
     }
 
@@ -133,6 +138,7 @@ impl ProviderDb {
             .to_be_bytes()
             .to_vec();
 
+        info!("Inserting channel {} into database", channel_name);
         let contract_channel_row = sqlx::query_as!(
             ChannelRow,
             r#"
@@ -160,7 +166,7 @@ impl ProviderDb {
         channel_name: &str,
         contract_channel: ContractChannel,
     ) -> Result<Option<ChannelRow>, sqlx::Error> {
-        let channel_row = self.get_channel_row(channel_name).await?;
+        let channel_row = self.get_channel_row_or_refresh(channel_name).await?;
         match channel_row {
             None => Err(sqlx::Error::RowNotFound),
             Some(channel_row) => {
@@ -174,6 +180,7 @@ impl ProviderDb {
                     .as_yoctonear()
                     .to_be_bytes()
                     .to_vec();
+                info!("Updating channel {} in database", channel_name);
                 let updated_channel_row = sqlx::query_as!(
                     ChannelRow,
                     r#"
@@ -224,13 +231,17 @@ impl ProviderDb {
         }
 
         // If we aren't tracking the channel, query the contract to get the channel state, save it, and return it
+        info!("Querying contract for channel {}", channel_name);
         let contract_channel = self.pc_client.channel(channel_name).await;
         match contract_channel {
             Some(contract_channel) => Ok(Some(
                 self.insert_channel_from_contract(channel_name, contract_channel)
                     .await?,
             )),
-            None => Err(sqlx::Error::RowNotFound),
+            None => {
+                info!("Channel {} not found in contract", channel_name);
+                Ok(None)
+            }
         }
     }
 
@@ -239,7 +250,7 @@ impl ProviderDb {
         signed_state: &SignedState,
     ) -> Result<SignedStateRow, sqlx::Error> {
         let channel_row = self
-            .get_channel_row(&signed_state.state.channel_id)
+            .get_channel_row_or_refresh(&signed_state.state.channel_id)
             .await?
             .ok_or(sqlx::Error::RowNotFound)?;
 
@@ -250,6 +261,10 @@ impl ProviderDb {
             .to_be_bytes()
             .to_vec();
         let signature = signed_state.signature.to_string();
+        info!(
+            "Inserting new latest signed state for channel {} into database",
+            channel_row.name
+        );
         let signed_state_row = sqlx::query_as!(
             SignedStateRow,
             r#"
@@ -272,6 +287,7 @@ impl ProviderDb {
         &self,
         channel_name: &str,
     ) -> Result<Option<SignedStateRow>, sqlx::Error> {
+        info!("Getting latest signed state for channel {}", channel_name);
         let signed_state = sqlx::query_as!(
             SignedStateRow,
             r#"
