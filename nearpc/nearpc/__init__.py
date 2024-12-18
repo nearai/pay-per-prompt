@@ -42,6 +42,10 @@ class NearPC:
         update: Whether to update the channel state after signing the new state.
         """
         channel = Channel.load(self.channel_id)
+
+        # TODO: Require signature from the provider to avoid them scamming the user with a higher spent balance
+        channel.spent_balance = spent_balance(self)
+
         amount_near = NearToken.parseNear(amount)
         new_spent_balance = channel.spent_balance + amount_near
 
@@ -57,14 +61,16 @@ class NearPC:
         header_value = base64.b64encode(new_payload).decode("utf-8")
         return {"X-Payments-Signature": header_value}
 
-
     def spent(self) -> float:
         return spent_balance(self).as_near()
 
     def balance(self) -> float:
         return remaining_spendable_balance(self).as_near()
 
+
 def get_only_channel() -> str:
+    # TODO: Get only channel based on provider account id
+    #       It is expected the user to only have one channel open per provider
     path = data() / "channels"
 
     if not path.exists():
@@ -138,13 +144,13 @@ class Channel:
             channel_id=channel["channel_id"],
             receiver=AccountDetails(
                 account_id=channel["receiver"]["account_id"],
-                public_key=parsePublicKey(channel["receiver"]["public_key"]),
+                public_key=parse_public_key(channel["receiver"]["public_key"]),
             ),
             sender=AccountDetails(
                 account_id=channel["sender"]["account_id"],
-                public_key=parsePublicKey(channel["sender"]["public_key"]),
+                public_key=parse_public_key(channel["sender"]["public_key"]),
             ),
-            sender_secret_key=parseSigningKey(channel["sender_secret_key"]),
+            sender_secret_key=parse_signing_key(channel["sender_secret_key"]),
             spent_balance=NearToken.parseYoctoNear(channel["spent_balance"]),
             added_balance=NearToken.parseYoctoNear(channel["added_balance"]),
             withdrawn_balance=NearToken.parseYoctoNear(channel["withdrawn_balance"]),
@@ -177,16 +183,17 @@ class Channel:
         return self.raw_state() + b"\x00" + self.signed_state()
 
 
-def parsePublicKey(key: str) -> nacl.public.PublicKey:
+def parse_public_key(key: str) -> nacl.public.PublicKey:
     assert key.startswith("ed25519:")
     key = key[len("ed25519:") :]
     return nacl.public.PublicKey(base58.b58decode(key))
 
 
-def parseSigningKey(key: str) -> nacl.signing.SigningKey:
+def parse_signing_key(key: str) -> nacl.signing.SigningKey:
     assert key.startswith("ed25519:")
     key = key[len("ed25519:") :]
     return nacl.signing.SigningKey(base58.b58decode(key)[:32])
+
 
 def remaining_spendable_balance(near_pc: NearPC) -> NearToken:
     with httpx.Client() as client:
@@ -195,7 +202,8 @@ def remaining_spendable_balance(near_pc: NearPC) -> NearToken:
         state = response.json()
         spent_balance = NearToken.parseYoctoNear(state["spent_balance"])
         added_balance = NearToken.parseYoctoNear(state["added_balance"])
-        return (added_balance - spent_balance)
+        return added_balance - spent_balance
+
 
 def spent_balance(near_pc: NearPC) -> NearToken:
     with httpx.Client() as client:

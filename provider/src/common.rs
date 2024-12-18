@@ -345,6 +345,8 @@ impl ProviderCtx {
     }
 
     pub async fn close_pc(&self, channel_name: &str) -> Result<NearSignedState, anyhow::Error> {
+        // TODO: Require signature from the sender to close the channel, so no other user can send the close request
+
         match self.db.get_channel_row_or_refresh(channel_name).await? {
             None => Err(anyhow::anyhow!("Channel not found")),
             Some(channel_row) => {
