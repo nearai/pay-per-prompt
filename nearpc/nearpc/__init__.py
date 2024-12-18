@@ -5,6 +5,7 @@ import struct
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
+import httpx
 
 import base58
 import nacl
@@ -51,6 +52,12 @@ class NearPC:
         return {"X-Payments-Signature": header_value}
 
 
+    def spent(self) -> float:
+        return spent_balance(self).as_near()
+
+    def balance(self) -> float:
+        return remaining_spendable_balance(self).as_near()
+
 def get_only_channel() -> str:
     path = data() / "channels"
 
@@ -74,6 +81,9 @@ class NearToken:
     def as_yocto_near(self) -> int:
         return self.yoctoNear
 
+    def as_near(self) -> float:
+        return float(self.yoctoNear / 10**24)
+
     @staticmethod
     def parseYoctoNear(amount: str | int) -> "NearToken":
         return NearToken(int(amount))
@@ -84,6 +94,9 @@ class NearToken:
 
     def __add__(self, other: "NearToken") -> "NearToken":
         return NearToken(self.yoctoNear + other.yoctoNear)
+
+    def __sub__(self, other: "NearToken") -> "NearToken":
+        return NearToken(self.yoctoNear - other.yoctoNear)
 
     def __lt__(self, other: "NearToken") -> bool:
         return self.yoctoNear < other.yoctoNear
@@ -168,3 +181,20 @@ def parseSigningKey(key: str) -> nacl.signing.SigningKey:
     assert key.startswith("ed25519:")
     key = key[len("ed25519:") :]
     return nacl.signing.SigningKey(base58.b58decode(key)[:32])
+
+def remaining_spendable_balance(near_pc: NearPC) -> NearToken:
+    with httpx.Client() as client:
+        response = client.get(f"{near_pc.provider_url}/pc/state/{near_pc.channel_id}")
+        response.raise_for_status()
+        state = response.json()
+        spent_balance = NearToken.parseYoctoNear(state["spent_balance"])
+        added_balance = NearToken.parseYoctoNear(state["added_balance"])
+        return (added_balance - spent_balance)
+
+def spent_balance(near_pc: NearPC) -> NearToken:
+    with httpx.Client() as client:
+        response = client.get(f"{near_pc.provider_url}/pc/state/{near_pc.channel_id}")
+        response.raise_for_status()
+        state = response.json()
+        spent_balance = NearToken.parseYoctoNear(state["spent_balance"])
+        return spent_balance
