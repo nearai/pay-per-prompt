@@ -6,3 +6,5 @@ network: "mainnet"
 account_id: "..."
 db_url: "sqlite://db.sqlite?mode=rwc"
 payment_channel_contract: "..."
+# 0.001 NEAR = 0.001 * 10^24 yoctoNEAR
+cost_per_completion: 1000000000000000000000
