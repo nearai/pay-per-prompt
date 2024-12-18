@@ -1,12 +1,14 @@
-from . import NearPC
 from openai import Client
+from termcolor import colored
+
+from . import NearPC
 
 SYSTEM_MESSAGE = "You are a helpful and funny assistant. On your answers you try to be correct, and say some comments that make people smile."
 
 
 def show_channel_info(nearpc: NearPC):
-    print(f"\n\nChannel ID: {nearpc.channel_id}")
-    print(f"Balance: {nearpc.balance()} NEAR")
+    print(colored(f"\n\nChannel ID: {nearpc.channel_id}", attrs=["bold"]))
+    print(colored(f"Balance: {nearpc.balance()} NEAR", attrs=["bold"]))
 
 
 def prepare_prompt(conversation) -> str:
@@ -28,7 +30,9 @@ def main():
         show_channel_info(nearpc)
         # TODO: Add colors to the prompt so it is easier to see the information
 
-        user_input = input("\n\n[q: quit] You >>> ").strip(" ")
+        user_input = input(
+            colored("\n\n[q: quit] You >>> ", "green", attrs=["bold"])
+        ).strip(" ")
 
         if user_input.lower() == "q":
             break
@@ -44,7 +48,7 @@ def main():
 
         answer = response.choices[0].text
 
-        print(f"\n\nAssistant >>> {answer}")
+        print(colored("\n\nAssistant >>>", "blue", attrs=["bold"]), f"{answer}")
         conversation.append({"role": "assistant", "content": answer})
 
 
