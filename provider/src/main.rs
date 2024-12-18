@@ -1,7 +1,8 @@
-use axum::extract::DefaultBodyLimit;
+use axum::extract::{DefaultBodyLimit, Request};
 use bytes::Bytes;
 use clap::{command, Parser, Subcommand};
 use config::Config;
+use http::HeaderValue;
 use openaiapi::server;
 use std::{net::Ipv4Addr, time::Duration};
 use tokio::net::TcpListener;
@@ -10,9 +11,28 @@ use tower_http::{
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
     LatencyUnit,
 };
-use tracing::info;
+use tracing::{info, Level};
 
-use provider::{ProviderBaseService, ProviderConfig, ProviderCtx, ProviderOaiService};
+use provider::{
+    ProviderBaseService, ProviderConfig, ProviderCtx, ProviderOaiService, PAYMENTS_HEADER_NAME,
+};
+
+// Since we are using generated server stubs that don't support extracting headers, we
+// have this shim middleware to convert our needed headers into 'cookies' which are
+// supported by the generated server stubs
+async fn payments_headers_to_cookie_middleware<B>(mut req: Request<B>) -> Request<B> {
+    let desired_header = PAYMENTS_HEADER_NAME;
+    let desired_header_opt = req.headers().get(desired_header);
+    match desired_header_opt {
+        None => req,
+        Some(header) => {
+            let cookie_header = format!("{}={}", PAYMENTS_HEADER_NAME, header.to_str().unwrap());
+            req.headers_mut()
+                .insert("Cookie", HeaderValue::from_str(&cookie_header).unwrap());
+            req
+        }
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -75,12 +95,15 @@ pub async fn start_server(addr: &str, args: RunCli) {
                 .on_body_chunk(|chunk: &Bytes, latency: Duration, _: &tracing::Span| {
                     tracing::trace!(size_bytes = chunk.len(), latency = ?latency, "sending body chunk")
                 })
-                .make_span_with(DefaultMakeSpan::new().include_headers(true))
-                .on_response(DefaultOnResponse::new().include_headers(true).latency_unit(LatencyUnit::Micros)),
+                .make_span_with(DefaultMakeSpan::new().include_headers(true).level(Level::INFO))
+                .on_response(DefaultOnResponse::new().include_headers(true).latency_unit(LatencyUnit::Micros).level(Level::INFO)),
         )
         // All requests that prefix /oai will go here
         .layer(RequestBodyLimitLayer::new(500 * 1000 * 1000)) // 500MB
-        .nest("/", provider_oai_service)
+        .nest(
+            "/",
+            provider_oai_service.layer(axum::middleware::map_request(payments_headers_to_cookie_middleware)),
+        )
         .nest("/", provider_base_service);
 
     let listener = TcpListener::bind(addr).await.unwrap();
