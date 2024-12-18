@@ -12,14 +12,13 @@ use cli::config::SignedState;
 use http::header;
 use http::Method;
 use http::StatusCode;
-use serde::Deserialize;
 use serde_json::json;
-use std::str::FromStr;
 use tracing::error;
 use tracing::info;
 
 use crate::AccountInfoPublic;
 use crate::ProviderCtx;
+use crate::PAYMENTS_HEADER_NAME;
 use crate::{ModelInfo, Provider, BAD_REQUEST, FOUR_HUNDRED};
 use openaiapi::apis::completions::{
     Completions, CreateCompletionResponse as CreateCompletionResponseAPI,
@@ -35,12 +34,6 @@ use openaiapi::models::{
 use openaiclient::apis::completions_api::create_completion;
 use openaiclient::apis::configuration::Configuration;
 use openaiclient::models::CreateCompletionRequest as CreateCompletionRequestClient;
-
-use near_crypto::Signature as NearSignature;
-use near_primitives::types::AccountId;
-use near_sdk::json_types::U128;
-
-// Reminder: this is private information, do not expose or serialize this struct
 
 #[derive(Debug)]
 pub struct ProviderBaseServiceError {
@@ -130,7 +123,7 @@ async fn post_pc_signed_state(
 
     state
         .ctx
-        .validate_insert_signed_state(&signed_state)
+        .validate_insert_signed_state(0, &signed_state)
         .await
         .map_err(|e| {
             error!("Unable to validate signed state: {:?}", e);
@@ -237,7 +230,7 @@ impl Completions for ProviderOaiService {
         &self,
         _method: Method,
         _host: Host,
-        _cookies: CookieJar,
+        cookies: CookieJar,
         mut body: CreateCompletionRequestAPI,
     ) -> Result<CreateCompletionResponseAPI, ()> {
         // Parse the model info from the request
@@ -275,6 +268,73 @@ impl Completions for ProviderOaiService {
                 ))
             }
         };
+
+        // Parse the payment header from the request
+        let payment_header = match cookies.get(PAYMENTS_HEADER_NAME) {
+            Some(payment_header) => payment_header.value().to_string(),
+            None => {
+                return Ok(CreateCompletionResponseAPI::Status400_BadRequest(
+                    Error::new(
+                        FOUR_HUNDRED.to_string(),
+                        BAD_REQUEST.to_string(),
+                        format!(
+                            "Payment header not found. Please ensure you've added the correct header under {} to your request.",
+                            PAYMENTS_HEADER_NAME
+                        ),
+                        "".to_string(),
+                    ),
+                ));
+            }
+        };
+
+        // Validate the payment header. If it's not valid, return a 400
+        let decoded_payload = match BASE64_STANDARD.decode(&payment_header) {
+            Ok(d) => d,
+            Err(e) => {
+                return Ok(CreateCompletionResponseAPI::Status400_BadRequest(
+                    Error::new(
+                        FOUR_HUNDRED.to_string(),
+                        BAD_REQUEST.to_string(),
+                        format!("Unable to decode base64 payment header: {}", e),
+                        "".to_string(),
+                    ),
+                ))
+            }
+        };
+        let signed_state: SignedState = match borsh::from_slice(&decoded_payload) {
+            Ok(s) => s,
+            Err(e) => {
+                return Ok(CreateCompletionResponseAPI::Status400_BadRequest(
+                    Error::new(
+                        FOUR_HUNDRED.to_string(),
+                        BAD_REQUEST.to_string(),
+                        format!(
+                            "Unable to deserialize borsh serialized SignedState from payment header: {}",
+                            e
+                        ),
+                        "".to_string(),
+                    ),
+                ));
+            }
+        };
+        let min_cost = self.ctx.config.cost_per_completion.0;
+        let validate_signed_state_result = self
+            .ctx
+            .validate_insert_signed_state(min_cost, &signed_state)
+            .await;
+        match validate_signed_state_result {
+            Ok(_) => (),
+            Err(e) => {
+                return Ok(CreateCompletionResponseAPI::Status400_BadRequest(
+                    Error::new(
+                        FOUR_HUNDRED.to_string(),
+                        BAD_REQUEST.to_string(),
+                        format!("Unable to validate signed state: {}", e),
+                        "".to_string(),
+                    ),
+                ));
+            }
+        }
 
         // Create the configuration from the provider configuration
         let mut configuration: Configuration = Configuration::new();
