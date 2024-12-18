@@ -4,18 +4,16 @@ from openai import Client
 
 def main():
     nearpc = NearPC()
-    client = Client(base_url=nearpc.provider_url, api_key="n/a")
+    client = Client(base_url=f"{nearpc.provider_url}/oai/", api_key="n/a")
 
-    # TODO: Delete me
-    # When `update` is False, the local version of the channel is not updated
-    header = nearpc.make_header("0.0001", update=False)
-    print(header)
-
-    client.chat.completions.create(
-        model="llama3",
-        messages=[{"role": "user", "content": "What are payment channels?"}],
-        extra_headers={"NEAR_PC_CHANNEL": nearpc.make_header("0.0001")},
+    response = client.completions.create(
+        model="fireworks::accounts/fireworks/models/llama-v3p3-70b-instruct",
+        prompt="What are payment channels?",
+        max_tokens=128,
+        extra_headers=nearpc.make_header("0.001"),
     )
+
+    print(response.model_dump_json(indent=2))
 
 
 if __name__ == "__main__":
