@@ -256,12 +256,6 @@ impl ProviderCtx {
         NearSignedState { state, signature }
     }
 
-    pub async fn current_gas_price(&self) -> NearToken {
-        let request = methods::gas_price::RpcGasPriceRequest { block_id: None };
-        let result = self.near_client.call(request).await.unwrap();
-        NearToken::from_yoctonear(result.gas_price)
-    }
-
     pub async fn public_account_info(&self) -> AccountInfoPublic {
         self.account_info.read().await.public_view()
     }

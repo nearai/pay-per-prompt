@@ -8,7 +8,7 @@ use cli::{
 use near_crypto::Signature;
 use near_sdk::{json_types::U128, AccountId, NearToken};
 use serde::Serialize;
-use sqlx::{sqlite::SqlitePool};
+use sqlx::sqlite::SqlitePool;
 use tracing::{error, info, warn};
 
 use crate::{
@@ -405,9 +405,9 @@ impl ProviderDb {
         limit: Option<u32>,
     ) -> ProviderResult<Vec<ChannelRow>> {
         // Get all the channels that:
-        // 1. haven't been closed due to inactivity
-        // 2. have been updated in a while
-        // 3. are owned by the provider
+        // 1. are owned by the provider + haven't been closed
+        // 2. haven't been updated in a while
+        // 3. have a withdrawable balance
         let updated_at_threshold = chrono::Utc::now().naive_utc() - stale_threshold;
         let limit = limit.unwrap_or(16);
         let account_id = self.account_id.to_string();
