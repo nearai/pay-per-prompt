@@ -3,6 +3,7 @@ name = "provider"
 version = "0.1.0"
 edition = "2021"
 build = "build.rs"
+authors = ["Alex Comerford <alex@taoa.io>"]
 
 [features]
 default = ["server"]
@@ -13,7 +14,10 @@ name = "provider"
 path = "src/lib.rs"
 
 [dependencies]
+futures = "0.3"
 clap = { version = "4.4.11", features = ["derive"] }
+borsh = "1.5.3"
+base64 = "0.22.1"
 bytes = "1"
 anyhow = "1.0.94"
 http = "1"
@@ -31,7 +35,10 @@ tokio = { version = "1.42.0", default-features = false, features = [
   "signal",
   "rt-multi-thread",
 ] }
+tokio-util = "0.7.13"
 tower-http = { version = "0.6.2", features = ["full"] }
+chrono = { version = "0.4.39", features = ["serde"] }
+sqlx = { version = "0.8.2", features = [ "runtime-tokio", "tls-native-tls", "sqlite", "chrono"] }
 
 openaiapi = { version = "2.0.0", path = "stubs/openaiapi", features = ["server"] }
 openaiclient = { version = "2.0.0", path = "stubs/openaiclient"}
@@ -43,9 +50,4 @@ near-primitives = "0.28.0"
 near-sdk = "5.7.0"
 near-cli-rs = "0.16.1"
 
-sqlx = { version = "0.8.2", features = [ "runtime-tokio", "tls-native-tls", "sqlite", "chrono" ] }
-chrono = { version = "0.4.39", features = ["serde"] }
-
 cli = { path = "../cli" }
-borsh = "1.5.3"
-base64 = "0.22.1"

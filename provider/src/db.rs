@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use cli::{
     config::{SignedState, State},
@@ -8,23 +8,38 @@ use near_crypto::Signature;
 use near_sdk::{json_types::U128, NearToken};
 use serde::Serialize;
 use sqlx::sqlite::SqlitePool;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
+
+use crate::{ChannelError, ProviderError, ProviderResult, CLOSED_CHANNEL_ACCOUNT_ID};
 
 #[derive(Default, Debug, sqlx::FromRow)]
 pub struct ChannelRow {
     pub id: i64,
+    pub updated_at: sqlx::types::chrono::NaiveDateTime,
     pub name: String,
     pub receiver: String,
     pub receiver_pk: String,
     pub sender: String,
     pub sender_pk: String,
     // Near Tokens in contracts are represented as u128's
-    // this isn't supported by sqlite, so we store them as bytes
+    // this isn't supported by sqlite, so we store them as bytes big endian
     pub added_balance: Vec<u8>,
     pub withdraw_balance: Vec<u8>,
+
+    pub force_close_started: Option<sqlx::types::chrono::NaiveDateTime>,
 }
 
 impl ChannelRow {
+    // A channel is in the 'default' state if it's been closed
+    // so check for a 'default' value
+    pub fn as_closed_result(self) -> Result<ChannelRow, ProviderError> {
+        if self.receiver == CLOSED_CHANNEL_ACCOUNT_ID {
+            Err(ProviderError::Channel(ChannelError::Closed))
+        } else {
+            Ok(self)
+        }
+    }
+
     pub fn added_balance(&self) -> NearToken {
         NearToken::from_yoctonear(u128::from_be_bytes(
             self.added_balance[..].try_into().unwrap_or([0; 16]),
@@ -116,28 +131,64 @@ impl ProviderDb {
         }
     }
 
-    async fn get_channel_row(&self, channel_name: &str) -> Result<Option<ChannelRow>, sqlx::Error> {
-        let channel = sqlx::query_as!(
+    pub async fn get_channel_row(&self, channel_name: &str) -> ProviderResult<ChannelRow> {
+        // Query the database for the channel row
+        // If the channel row is found, return it
+        // If it isn't found, warn and fallback to querying the contract
+        // Result wrap any non-rownotfound database errors
+        match sqlx::query_as!(
             ChannelRow,
             "SELECT * FROM channel WHERE name = ? LIMIT 1",
             channel_name
         )
         .fetch_optional(&self.connection)
-        .await?;
+        .await
+        {
+            Ok(Some(channel)) => {
+                info!("Querying channel retrieved from database: {}", channel_name);
+                return Ok(channel.as_closed_result()?);
+            }
+            Ok(None) | Err(sqlx::Error::RowNotFound) => {
+                warn!("Querying channel not found in database: {}", channel_name)
+            }
+            Err(e) => {
+                error!("Error querying channel from database: {}", e);
+                return Err(ProviderError::DBError(e));
+            }
+        };
 
-        if channel.is_none() {
-            warn!("Channel {} not found in database", channel_name);
-        } else {
-            info!("Channel {} retrieved from database", channel_name);
+        // At this point, we know the channel isn't in the database, so we need to query the contract
+        // as the source of truth and insert+return it
+        info!(
+            "Fallback to querying contract for channel: {}",
+            channel_name
+        );
+        match self.pc_client.channel(channel_name).await {
+            Some(contract_channel) => Ok(self
+                .insert_channel_from_contract(channel_name, contract_channel)
+                .await?),
+            None => {
+                info!("Channel {} not found in contract", channel_name);
+                Err(ProviderError::Channel(ChannelError::NotFound))
+            }
         }
-        Ok(channel)
+    }
+
+    pub async fn refresh_channel_row(&self, channel_name: &str) -> ProviderResult<ChannelRow> {
+        match self.pc_client.channel(channel_name).await {
+            Some(contract_channel) => {
+                self.update_channel_from_contract(channel_name, contract_channel)
+                    .await
+            }
+            _ => return Err(ProviderError::Channel(ChannelError::NotFound)),
+        }
     }
 
     async fn insert_channel_from_contract(
         &self,
         channel_name: &str,
         contract_channel: ContractChannel,
-    ) -> Result<ChannelRow, sqlx::Error> {
+    ) -> ProviderResult<ChannelRow> {
         let sender_account = contract_channel.sender.account_id.to_string();
         let sender_pk = contract_channel.sender.public_key.to_string();
         let receiver_account = contract_channel.receiver.account_id.to_string();
@@ -153,7 +204,7 @@ impl ProviderDb {
             .to_be_bytes()
             .to_vec();
 
-        info!("Inserting channel {} into database", channel_name);
+        info!("Inserting channel into database: {}", channel_name);
         let contract_channel_row = sqlx::query_as!(
             ChannelRow,
             r#"
@@ -171,91 +222,67 @@ impl ProviderDb {
             withdrawn_balance
         )
         .fetch_one(&self.connection)
-        .await?;
+        .await;
 
-        Ok(contract_channel_row)
+        match contract_channel_row {
+            Ok(channel) => Ok(channel),
+            Err(e) => {
+                error!("Error inserting channel into database: {}", e);
+                Err(ProviderError::DBError(e))
+            }
+        }
     }
 
     async fn update_channel_from_contract(
         &self,
         channel_name: &str,
         contract_channel: ContractChannel,
-    ) -> Result<Option<ChannelRow>, sqlx::Error> {
-        let channel_row = self.get_channel_row_or_refresh(channel_name).await?;
-        match channel_row {
-            None => Err(sqlx::Error::RowNotFound),
-            Some(channel_row) => {
-                let updated_added_balance = contract_channel
-                    .added_balance
-                    .as_yoctonear()
-                    .to_be_bytes()
-                    .to_vec();
-                let updated_withdrawn_balance = contract_channel
-                    .withdrawn_balance
-                    .as_yoctonear()
-                    .to_be_bytes()
-                    .to_vec();
-                info!("Updating channel {} in database", channel_name);
-                let updated_channel_row = sqlx::query_as!(
-                    ChannelRow,
-                    r#"
-                    UPDATE channel
-                    SET added_balance = ?, withdraw_balance = ?
-                    WHERE id = ?
-                    RETURNING *
-                    "#,
-                    updated_added_balance,
-                    updated_withdrawn_balance,
-                    channel_row.id
-                )
-                .fetch_one(&self.connection)
-                .await?;
-
-                Ok(Some(updated_channel_row))
-            }
-        }
-    }
-
-    pub async fn refresh_channel_row(
-        &self,
-        channel_name: &str,
-    ) -> Result<Option<ChannelRow>, sqlx::Error> {
+    ) -> ProviderResult<ChannelRow> {
         let channel_row = self.get_channel_row(channel_name).await?;
-        let contract_channel = self.pc_client.channel(channel_name).await;
-        match (channel_row, contract_channel) {
-            (Some(_), Some(contract_channel)) => {
-                self.update_channel_from_contract(channel_name, contract_channel)
-                    .await
-            }
-            (None, Some(contract_channel)) => Ok(Some(
-                self.insert_channel_from_contract(channel_name, contract_channel)
-                    .await?,
-            )),
-            _ => return Err(sqlx::Error::RowNotFound),
-        }
-    }
+        let sender = contract_channel.sender.account_id.to_string();
+        let receiver = contract_channel.receiver.account_id.to_string();
+        let updated_added_balance = contract_channel
+            .added_balance
+            .as_yoctonear()
+            .to_be_bytes()
+            .to_vec();
+        let updated_withdrawn_balance = contract_channel
+            .withdrawn_balance
+            .as_yoctonear()
+            .to_be_bytes()
+            .to_vec();
+        let force_close_started: Option<chrono::DateTime<chrono::Utc>> = contract_channel
+            .force_close_started
+            .map(|v| sqlx::types::chrono::DateTime::from_timestamp_nanos(v as i64));
+        info!("Updating channel {} in database", channel_name);
+        let updated_channel_row = sqlx::query_as!(
+            ChannelRow,
+            r#"
+            UPDATE channel
+            SET updated_at = CURRENT_TIMESTAMP,
+                sender = ?,
+                receiver = ?,
+                added_balance = ?,
+                withdraw_balance = ?,
+                force_close_started = ?
+            WHERE id = ?
+            RETURNING *
+            "#,
+            sender,
+            receiver,
+            updated_added_balance,
+            updated_withdrawn_balance,
+            force_close_started,
+            channel_row.id
+        )
+        .fetch_one(&self.connection)
+        .await;
 
-    pub async fn get_channel_row_or_refresh(
-        &self,
-        channel_name: &str,
-    ) -> Result<Option<ChannelRow>, sqlx::Error> {
-        // Check if the channel exists in the db, if it does, return it
-        let channel = self.get_channel_row(channel_name).await?;
-        if channel.is_some() {
-            return Ok(channel);
-        }
-
-        // If we aren't tracking the channel, query the contract to get the channel state, save it, and return it
-        info!("Querying contract for channel {}", channel_name);
-        let contract_channel = self.pc_client.channel(channel_name).await;
-        match contract_channel {
-            Some(contract_channel) => Ok(Some(
-                self.insert_channel_from_contract(channel_name, contract_channel)
-                    .await?,
-            )),
-            None => {
-                info!("Channel {} not found in contract", channel_name);
-                Ok(None)
+        match updated_channel_row {
+            Ok(channel) => Ok(channel),
+            Err(e) => {
+                error!("Error updating channel in database: {}", e);
+                Err(ProviderError::DBError(e))
             }
         }
     }
@@ -263,11 +290,8 @@ impl ProviderDb {
     pub async fn insert_signed_state(
         &self,
         signed_state: &SignedState,
-    ) -> Result<SignedStateRow, sqlx::Error> {
-        let channel_row = self
-            .get_channel_row_or_refresh(&signed_state.state.channel_id)
-            .await?
-            .ok_or(sqlx::Error::RowNotFound)?;
+    ) -> ProviderResult<SignedStateRow> {
+        let channel_row = self.get_channel_row(&signed_state.state.channel_id).await?;
 
         let spent_balance = signed_state
             .state
@@ -293,15 +317,21 @@ impl ProviderDb {
             signature
         )
         .fetch_one(&self.connection)
-        .await?;
+        .await;
 
-        Ok(signed_state_row)
+        match signed_state_row {
+            Ok(signed_state) => Ok(signed_state),
+            Err(e) => {
+                error!("Error inserting signed state into database: {}", e);
+                Err(ProviderError::DBError(e))
+            }
+        }
     }
 
     pub async fn latest_signed_state(
         &self,
         channel_name: &str,
-    ) -> Result<Option<SignedStateRow>, sqlx::Error> {
+    ) -> ProviderResult<Option<SignedStateRow>> {
         info!("Getting latest signed state for channel {}", channel_name);
         let signed_state = sqlx::query_as!(
             SignedStateRow,
@@ -316,7 +346,50 @@ impl ProviderDb {
             channel_name,
         )
         .fetch_optional(&self.connection)
-        .await?;
-        Ok(signed_state)
+        .await;
+
+        match signed_state {
+            Ok(Some(signed_state)) => Ok(Some(signed_state)),
+            Ok(None) => Ok(None),
+            Err(e) => {
+                error!("Error querying latest signed state from database: {}", e);
+                Err(ProviderError::DBError(e))
+            }
+        }
+    }
+
+    pub async fn get_stale_channels(
+        &self,
+        stale_threshold: Duration,
+        limit: Option<u32>,
+    ) -> ProviderResult<Vec<ChannelRow>> {
+        // Get all the channels that haven't been closed
+        // and have been updated in the last stale_threshold
+        let updated_at_threshold = sqlx::types::chrono::Utc::now() - stale_threshold;
+        let limit = limit.unwrap_or(16);
+        let channels = sqlx::query_as!(
+            ChannelRow,
+            r#"
+            SELECT *
+            FROM channel
+            WHERE updated_at < ? AND
+                  receiver != ?
+            ORDER BY updated_at DESC
+            LIMIT ?
+            "#,
+            updated_at_threshold,
+            CLOSED_CHANNEL_ACCOUNT_ID,
+            limit
+        )
+        .fetch_all(&self.connection)
+        .await;
+
+        match channels {
+            Ok(channels) => Ok(channels),
+            Err(e) => {
+                error!("Error querying stale channels from database: {}", e);
+                Err(ProviderError::DBError(e))
+            }
+        }
     }
 }

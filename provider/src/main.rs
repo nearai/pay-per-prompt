@@ -11,10 +11,11 @@ use tower_http::{
     trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer},
     LatencyUnit,
 };
-use tracing::{info, Level};
+use tracing::{error, info, Level};
 
 use provider::{
-    ProviderBaseService, ProviderConfig, ProviderCtx, ProviderOaiService, PAYMENTS_HEADER_NAME,
+    ProviderBackgroundService, ProviderBaseService, ProviderConfig, ProviderCtx,
+    ProviderOaiService, PAYMENTS_HEADER_NAME,
 };
 
 // Since we are using generated server stubs that don't support extracting headers, we
@@ -83,6 +84,9 @@ pub async fn start_server(addr: &str, args: RunCli) {
     info!("Creating common provider context");
     let ctx = ProviderCtx::new(provider_model_config.clone());
 
+    info!("Starting provider background service");
+    let background_service_handle = ProviderBackgroundService::new(ctx.clone()).run();
+
     info!("Starting Provider API");
     let provider_base = ProviderBaseService::new(ctx.clone());
     let provider_base_service = ProviderBaseService::router(provider_base);
@@ -108,7 +112,18 @@ pub async fn start_server(addr: &str, args: RunCli) {
 
     let listener = TcpListener::bind(addr).await.unwrap();
     info!("Listening on: {}", addr);
-    axum::serve(listener, app).await.unwrap();
+    if let Err(e) = axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            tokio::signal::ctrl_c()
+                .await
+                .expect("Failed to listen for Ctrl+C");
+            ctx.cancel_token.cancel();
+        })
+        .await
+    {
+        error!("Server error: {}", e);
+    }
+    background_service_handle.await.unwrap();
 }
 
 #[tokio::main(flavor = "multi_thread", worker_threads = 32)]

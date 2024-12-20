@@ -13,11 +13,11 @@ use http::header;
 use http::Method;
 use http::StatusCode;
 use serde_json::json;
-use tracing::error;
 use tracing::info;
 
 use crate::AccountInfoPublic;
 use crate::ProviderCtx;
+use crate::UserFacingError;
 use crate::PAYMENTS_HEADER_NAME;
 use crate::{ModelInfo, Provider, BAD_REQUEST, FOUR_HUNDRED};
 use openaiapi::apis::completions::{
@@ -87,29 +87,31 @@ async fn info_handler(State(state): State<ProviderBaseService>) -> Json<AccountI
 async fn close_handler(
     State(state): State<ProviderBaseService>,
     Path(channel_name): Path<String>,
-) -> Json<SignedState> {
-    Json(state.ctx.close_pc(&channel_name).await.unwrap())
+) -> Result<impl IntoResponse, ProviderBaseServiceError> {
+    let result = state.ctx.close_pc(&channel_name).await.map_err(|e| {
+        let message = UserFacingError::from(&e).to_string();
+        let status_code = StatusCode::from(&e);
+        ProviderBaseServiceError {
+            message,
+            status_code,
+        }
+    })?;
+    Ok((StatusCode::OK, Json(result)))
 }
 
 async fn get_pc_state(
     State(state): State<ProviderBaseService>,
     Path(channel_name): Path<String>,
 ) -> Result<impl IntoResponse, ProviderBaseServiceError> {
-    let result = state
-        .ctx
-        .get_pc_state(&channel_name)
-        .await
-        .map_err(|e| {
-            error!("Unable to get payment channel state: {:?}", e);
-            ProviderBaseServiceError {
-                message: "Unable to get payment channel state".to_string(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
-        })?
-        .ok_or(ProviderBaseServiceError {
-            message: "Payment channel not found".to_string(),
-            status_code: StatusCode::NOT_FOUND,
-        })?;
+    let result =
+        state
+            .ctx
+            .get_pc_state(&channel_name)
+            .await
+            .map_err(|e| ProviderBaseServiceError {
+                message: UserFacingError::from(&e).to_string(),
+                status_code: StatusCode::from(&e),
+            })?;
 
     Ok((StatusCode::OK, Json(result)))
 }
@@ -118,22 +120,32 @@ async fn post_pc_signed_state(
     State(state): State<ProviderBaseService>,
     body: String,
 ) -> Result<impl IntoResponse, ProviderBaseServiceError> {
-    let decoded_payload = BASE64_STANDARD.decode(&body).unwrap();
-    let signed_state: SignedState = borsh::from_slice(&decoded_payload).unwrap();
+    let decoded_payload = BASE64_STANDARD
+        .decode(&body)
+        .map_err(|e| ProviderBaseServiceError {
+            message: format!("Unable to decode base64: {}", e),
+            status_code: StatusCode::BAD_REQUEST,
+        })?;
+    let signed_state = borsh::from_slice::<SignedState>(&decoded_payload).map_err(|e| {
+        ProviderBaseServiceError {
+            message: format!(
+                "Unable to deserialize borsh serialized SignedState from payment header: {}",
+                e
+            ),
+            status_code: StatusCode::BAD_REQUEST,
+        }
+    })?;
 
     state
         .ctx
         .validate_insert_signed_state(0, &signed_state)
         .await
-        .map_err(|e| {
-            error!("Unable to validate signed state: {:?}", e);
-            ProviderBaseServiceError {
-                message: format!("Unable to validate signed state: {}", e),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            }
+        .map_err(|e| ProviderBaseServiceError {
+            message: UserFacingError::from(&e).to_string(),
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
         })?;
 
-    Ok((StatusCode::CREATED, Json(signed_state)))
+    Ok((StatusCode::OK, Json(signed_state)))
 }
 
 #[derive(Clone)]
@@ -325,11 +337,12 @@ impl Completions for ProviderOaiService {
         match validate_signed_state_result {
             Ok(_) => (),
             Err(e) => {
+                let user_error = UserFacingError::from(&e);
                 return Ok(CreateCompletionResponseAPI::Status400_BadRequest(
                     Error::new(
                         FOUR_HUNDRED.to_string(),
                         BAD_REQUEST.to_string(),
-                        format!("Unable to validate signed state: {}", e),
+                        user_error.to_string(),
                         "".to_string(),
                     ),
                 ));

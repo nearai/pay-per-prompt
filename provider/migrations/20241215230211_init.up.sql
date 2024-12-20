@@ -1,13 +1,15 @@
 -- Add migration script here
 CREATE TABLE IF NOT EXISTS channel (
     id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     name VARCHAR(255) NOT NULL UNIQUE,
     sender VARCHAR(255) NOT NULL,
     sender_pk VARCHAR(255) NOT NULL,
     receiver VARCHAR(255) NOT NULL,
     receiver_pk VARCHAR(255) NOT NULL,
     added_balance BLOB NOT NULL CHECK (length(added_balance) = 16),
-    withdraw_balance BLOB NOT NULL CHECK (length(withdraw_balance) = 16)
+    withdraw_balance BLOB NOT NULL CHECK (length(withdraw_balance) = 16),
+    force_close_started TIMESTAMP DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS signed_state (

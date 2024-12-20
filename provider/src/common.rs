@@ -1,5 +1,6 @@
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Error;
 use borsh::to_vec;
@@ -13,7 +14,6 @@ use near_cli_rs::common::KeyPairProperties;
 use near_cli_rs::config::Config as NearConfig;
 use near_cli_rs::config::NetworkConfig as NearNetworkConfig;
 use near_crypto::InMemorySigner;
-use near_crypto::Signature;
 use near_crypto::Signer;
 use near_crypto::{PublicKey as NearPublicKey, SecretKey as NearSecretKey};
 use near_jsonrpc_client::JsonRpcClient;
@@ -25,8 +25,14 @@ use near_sdk::NearToken;
 use serde::Deserialize;
 use serde::Serialize;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 
+use crate::ChannelError;
+use crate::ChannelRow;
+use crate::ProviderError;
+use crate::ProviderResult;
+use crate::SignedStateError;
 use crate::{ProviderDb, MODEL_DELIMITER};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -158,8 +164,9 @@ pub struct PaymentChannelState {
 #[derive(Clone)]
 pub struct ProviderCtx {
     pub config: ProviderConfig,
-    pub db: ProviderDb,
-    pub pc_client: NearPaymentChannelContractClient,
+    pub cancel_token: CancellationToken,
+    pc_client: NearPaymentChannelContractClient,
+    db: ProviderDb,
     _account_info: Arc<RwLock<AccountInfoPrivate>>,
 }
 
@@ -220,6 +227,7 @@ impl ProviderCtx {
             config,
             db,
             pc_client,
+            cancel_token: CancellationToken::new(),
             _account_info: Arc::new(RwLock::new(account_info)),
         }
     }
@@ -228,16 +236,8 @@ impl ProviderCtx {
         self._account_info.read().await.public_view()
     }
 
-    pub async fn get_pc_state(
-        &self,
-        channel_name: &str,
-    ) -> Result<Option<PaymentChannelState>, sqlx::Error> {
-        let channel_row =
-            if let Some(row) = self.db.get_channel_row_or_refresh(channel_name).await? {
-                row
-            } else {
-                return Ok(None);
-            };
+    pub async fn get_pc_state(&self, channel_name: &str) -> ProviderResult<PaymentChannelState> {
+        let channel_row = self.db.get_channel_row(channel_name).await?;
 
         // Get the spent balance from the latest signed state
         // If no signed state is found, the spent balance is 0
@@ -248,136 +248,170 @@ impl ProviderCtx {
 
         let added_balance = channel_row.added_balance();
         let withdraw_balance = channel_row.withdraw_balance();
-        Ok(Some(PaymentChannelState {
+        Ok(PaymentChannelState {
             channel_name: channel_row.name,
             sender: channel_row.sender,
             receiver: channel_row.receiver,
             spent_balance,
             added_balance: U128::from(added_balance.as_yoctonear()),
             withdraw_balance: U128::from(withdraw_balance.as_yoctonear()),
-        }))
+        })
     }
 
     pub async fn validate_insert_signed_state(
         &self,
         min_cost: u128,
         signed_state: &NearSignedState,
-    ) -> Result<(), anyhow::Error> {
-        match self
+    ) -> ProviderResult<()> {
+        let channel_row = self
             .db
-            .get_channel_row_or_refresh(&signed_state.state.channel_id)
+            .get_channel_row(&signed_state.state.channel_id)
+            .await?;
+
+        // Get the receiver public key registered in the channel,
+        // Check that 'we' are the receiver, otherwise return an error
+        let receiver_public_key =
+            NearPublicKey::from_str(&channel_row.receiver_pk).map_err(|e| {
+                ProviderError::Channel(ChannelError::InvalidPublicKey(format!(
+                    "Error deserializing receiver public key in contract: {}",
+                    e
+                )))
+            })?;
+        if receiver_public_key != self._account_info.read().await.public_key {
+            return Err(ProviderError::Channel(ChannelError::InvalidOwner(format!(
+                "Receiver public key {} of channel {} does not match public key {}",
+                channel_row.name,
+                receiver_public_key,
+                self._account_info.read().await.public_key
+            ))));
+        }
+
+        // Get the sender public key registered in the channel
+        let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk).map_err(|e| {
+            ProviderError::Channel(ChannelError::InvalidPublicKey(format!(
+                "Error deserializing sender public key in contract: {}",
+                e
+            )))
+        })?;
+
+        // validate signature with the senders public key
+        // this assumes that the sender is the only one who can sign the state
+        let data = to_vec(&signed_state.state).map_err(|e| {
+            ProviderError::SignedState(SignedStateError::SerializationError(e.to_string()))
+        })?;
+        if !signed_state.signature.verify(&data, &sender_public_key) {
+            return Err(ProviderError::SignedState(
+                SignedStateError::InvalidSignature,
+            ));
+        }
+
+        // Check that the sender is monotonically increasing their spent balance
+        let most_recent_spent_balance = match self
+            .db
+            .latest_signed_state(&signed_state.state.channel_id)
             .await?
         {
-            None => Err(anyhow::anyhow!("Channel not found")),
-            Some(channel_row) => {
-                // Get the sender public key registered in the channel
-                let sender_public_key = NearPublicKey::from_str(&channel_row.sender_pk)
-                    .map_err(|e| anyhow::anyhow!("Invalid public key format: {}", e))?;
+            Some(signed_state) => signed_state.spent_balance().as_yoctonear(),
+            None => 0_u128,
+        };
+        let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
+        if new_spent_balance <= most_recent_spent_balance {
+            return Err(ProviderError::SignedState(
+                SignedStateError::NonMonotonicSpentBalance(format!(
+                    "New spent balance must monotonically increase. Current spent balance: {} <= Previous spent balance: {}",
+                    new_spent_balance, most_recent_spent_balance
+                )),
+            ));
+        }
 
-                // validate signature with the senders public key
-                // this assumes that the sender is the only one who can sign the state
-                let data = to_vec(&signed_state.state)
-                    .map_err(|e| anyhow::anyhow!("Failed to serialize state: {}", e))?;
-                let signature_valid = signed_state.signature.verify(&data, &sender_public_key);
-                if !signature_valid {
-                    return Err(anyhow::anyhow!("Invalid signature"));
-                }
+        // Check that the sender has authorized an amount above the minimum cost
+        let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
+        let prev_spend_balance = most_recent_spent_balance;
+        if new_spent_balance < prev_spend_balance + min_cost {
+            return Err(ProviderError::SignedState(
+                SignedStateError::AmountTooSmall(format!(
+                    "New spent balance {} is less than the minimum cost of {}",
+                    NearToken::from_yoctonear(new_spent_balance).exact_amount_display(),
+                    NearToken::from_yoctonear(min_cost).exact_amount_display()
+                )),
+            ));
+        }
 
-                // Check that the sender is monotonically increasing their spent balance
-                let most_recent_spent_balance = match self
-                    .db
-                    .latest_signed_state(&signed_state.state.channel_id)
-                    .await?
-                {
-                    Some(signed_state) => signed_state.spent_balance().as_yoctonear(),
-                    None => 0_u128,
-                };
-                let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
-                if new_spent_balance <= most_recent_spent_balance {
-                    return Err(anyhow::anyhow!(
-                        "New spent balance is less than or equal to the most recent spent balance"
-                    ));
-                }
+        // Check that the user does not have insufficient funds.
+        // Insufficient funds means that the user has spent more than the added balance.
+        // If insufficient funds, resync the channel and check again (unhappy path)
+        // If still insufficient funds, tell the user they need to top up the channel
+        let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
+        let added_balance = channel_row.added_balance().as_yoctonear();
+        if added_balance < new_spent_balance {
+            // in case the channel is out of sync with the blockchain, resync and check again
+            let resynced_channel_row = self
+                .db
+                .refresh_channel_row(&signed_state.state.channel_id)
+                .await?;
 
-                // Check that the sender has authorized an amount above the minimum cost
-                let new_spent_balance = signed_state.state.spent_balance.as_yoctonear();
-                let prev_spend_balance = most_recent_spent_balance;
-                if new_spent_balance < prev_spend_balance + min_cost {
-                    return Err(anyhow::anyhow!(
-                        "New spent balance is less than the minimum cost of {} yoctoNEAR",
-                        min_cost
-                    ));
-                }
-
-                // Check that the users new spend balance is not greater than the added balance.
-                // If it is, resync the channel and check again (unhappy path)
-                // If it still is, tell the user they need to top up the channel
-                let added_balance = channel_row.added_balance().as_yoctonear();
-                if new_spent_balance > added_balance {
-                    // in case the channel is out of sync with the blockchain, resync and check again
-                    match self
-                        .db
-                        .refresh_channel_row(&signed_state.state.channel_id)
-                        .await?
-                    {
-                        Some(channel_row) => {
-                            let resynced_spent_balance = channel_row.added_balance().as_yoctonear();
-                            if new_spent_balance > resynced_spent_balance {
-                                return Err(anyhow::anyhow!(
-                                    "New spent balance is greater than the added balance by {} units. Please top up the channel.",
-                                    new_spent_balance - resynced_spent_balance
-                                ));
-                            }
-                        }
-                        None => {
-                            return Err(anyhow::anyhow!("Channel not found"));
-                        }
-                    }
-                }
-
-                self.db.insert_signed_state(signed_state).await?;
-
-                Ok(())
+            let resynced_spent_balance = resynced_channel_row.added_balance().as_yoctonear();
+            if new_spent_balance > resynced_spent_balance {
+                return Err(ProviderError::SignedState(
+                    SignedStateError::InsufficientFunds(format!(
+                        "New spent balance is greater than the added balance by {} units. Please top up the channel.",
+                        new_spent_balance - resynced_spent_balance
+                    )),
+                ));
             }
         }
+
+        self.db.insert_signed_state(signed_state).await?;
+
+        Ok(())
     }
 
-    pub async fn close_pc(&self, channel_name: &str) -> Result<NearSignedState, anyhow::Error> {
+    pub async fn close_pc(&self, channel_name: &str) -> ProviderResult<NearSignedState> {
         // TODO: Require signature from the sender to close the channel, so no other user can send the close request
+        let channel_row = self.db.get_channel_row(channel_name).await?;
 
-        match self.db.get_channel_row_or_refresh(channel_name).await? {
-            None => Err(anyhow::anyhow!("Channel not found")),
-            Some(channel_row) => {
-                info!("Closing channel: {}", channel_row.name);
+        info!("Closing channel: {}", channel_row.name);
 
-                // Check if there is the sender has spent money that we haven't withdrawn yet
-                if let Some(signed_state) = self.db.latest_signed_state(&channel_row.name).await? {
-                    info!(
-                        "There is a signed state: {:?}",
-                        signed_state.spent_balance()
-                    );
-                    // TODO: Check the amount of money available is large enough so that it makes sense to withdraw it
-                    let state: NearSignedState = signed_state.into();
+        // Check if there is the sender has spent money that we haven't withdrawn yet
+        if let Some(signed_state) = self.db.latest_signed_state(&channel_row.name).await? {
+            info!(
+                "There is a signed state: {:?}",
+                signed_state.spent_balance()
+            );
+            // TODO: Check the amount of money available is large enough so that it makes sense to withdraw it
+            let state: NearSignedState = signed_state.into();
 
-                    info!("Withdrawing: {:?}", state);
+            info!("Withdrawing: {:?}", state);
 
-                    self.pc_client.withdraw(state).await;
-                }
-
-                // Payload to send to user to close the channel
-                let state = NearState {
-                    channel_id: channel_name.to_string(),
-                    spent_balance: NearToken::from_yoctonear(0),
-                };
-
-                let message = borsh::to_vec(&state).unwrap();
-                let signer = self._account_info.read().await.as_signer();
-                let signature = signer.sign(&message);
-
-                // TODO: Update db reflecting that the channel is now closed
-
-                Ok(NearSignedState { state, signature })
-            }
+            self.pc_client.withdraw(state).await;
         }
+
+        // Payload to send to user to close the channel
+        let state = NearState {
+            channel_id: channel_name.to_string(),
+            spent_balance: NearToken::from_yoctonear(0),
+        };
+
+        let message = borsh::to_vec(&state).unwrap();
+        let signer = self._account_info.read().await.as_signer();
+        let signature = signer.sign(&message);
+
+        // TODO: Update db reflecting that the channel is now closed
+
+        Ok(NearSignedState { state, signature })
+    }
+
+    pub async fn get_stale_channels(
+        &self,
+        stale_threshold: Duration,
+        batch_size: Option<u32>,
+    ) -> ProviderResult<Vec<ChannelRow>> {
+        self.db
+            .get_stale_channels(stale_threshold, batch_size)
+            .await
+    }
+
+    pub async fn refresh_channel_row(&self, channel_name: &str) -> ProviderResult<ChannelRow> {
+        self.db.refresh_channel_row(channel_name).await
     }
 }
