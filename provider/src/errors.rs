@@ -14,6 +14,8 @@ pub enum ChannelError {
     Closed,
     InvalidOwner(String),
     InvalidPublicKey(String),
+    WithdrawTooSmall,
+    NonMonotonicWithdraw,
 }
 
 #[derive(Debug)]
@@ -75,6 +77,8 @@ impl From<&ProviderError> for UserFacingError {
 
             // Probobally not the best idea to expose the internal database error to users
             ProviderError::DBError(e) => UserFacingError(format!("Internal database error: {}", e)),
+
+            _ => UserFacingError("Internal server error".to_string()),
         }
     }
 }
