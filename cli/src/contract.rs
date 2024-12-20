@@ -122,6 +122,19 @@ impl Contract {
             .await;
     }
 
+    pub async fn withdraw_and_close(&self, state: SignedState, close: SignedState) {
+        self.client
+            .change_call(
+                &self.signer,
+                self.contract.clone(),
+                "withdraw_and_close",
+                json!({"state" : state, "close" : close}),
+                Gas::from_tgas(15),
+                NearToken::from_yoctonear(0),
+            )
+            .await;
+    }
+
     pub async fn topup(&self, channel_id: &str, amount: NearToken) {
         self.client
             .change_call(
