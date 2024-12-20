@@ -1,21 +1,24 @@
-use std::{str::FromStr, time::Duration};
+use std::{str::FromStr, sync::Arc, time::Duration};
 
+use chrono::Utc;
 use cli::{
     config::{SignedState, State},
     contract::{Contract as NearPaymentChannelContractClient, ContractChannel},
 };
 use near_crypto::Signature;
-use near_sdk::{json_types::U128, NearToken};
+use near_sdk::{json_types::U128, AccountId, NearToken};
 use serde::Serialize;
-use sqlx::sqlite::SqlitePool;
+use sqlx::{sqlite::SqlitePool};
 use tracing::{error, info, warn};
 
-use crate::{ChannelError, ProviderError, ProviderResult, CLOSED_CHANNEL_ACCOUNT_ID};
+use crate::{
+    ChannelError, ProviderError, ProviderResult, CLOSED_CHANNEL_ACCOUNT_ID, STALE_CHANNEL_THRESHOLD,
+};
 
 #[derive(Default, Debug, sqlx::FromRow)]
 pub struct ChannelRow {
     pub id: i64,
-    pub updated_at: sqlx::types::chrono::NaiveDateTime,
+    pub updated_at: chrono::NaiveDateTime,
     pub name: String,
     pub receiver: String,
     pub receiver_pk: String,
@@ -26,7 +29,7 @@ pub struct ChannelRow {
     pub added_balance: Vec<u8>,
     pub withdraw_balance: Vec<u8>,
 
-    pub force_close_started: Option<sqlx::types::chrono::NaiveDateTime>,
+    pub force_close_started: Option<chrono::NaiveDateTime>,
 }
 
 impl ChannelRow {
@@ -50,6 +53,12 @@ impl ChannelRow {
         NearToken::from_yoctonear(u128::from_be_bytes(
             self.withdraw_balance[..].try_into().unwrap_or([0; 16]),
         ))
+    }
+
+    pub fn is_stale(&self) -> bool {
+        let now = Utc::now().naive_utc();
+        let inactive_threshold = now - STALE_CHANNEL_THRESHOLD;
+        self.updated_at < inactive_threshold
     }
 }
 
@@ -94,7 +103,7 @@ impl SignedStateRow {
     }
 }
 
-impl Into<SignedState> for SignedStateRow {
+impl Into<SignedState> for &SignedStateRow {
     fn into(self) -> SignedState {
         SignedState {
             state: State {
@@ -110,10 +119,15 @@ impl Into<SignedState> for SignedStateRow {
 pub struct ProviderDb {
     connection: SqlitePool,
     pc_client: NearPaymentChannelContractClient,
+    account_id: AccountId,
 }
 
 impl ProviderDb {
-    pub fn new(database_url: &str, pc_client: NearPaymentChannelContractClient) -> Self {
+    pub fn new(
+        database_url: &str,
+        pc_client: NearPaymentChannelContractClient,
+        account_id: AccountId,
+    ) -> Self {
         info!("Initializing database");
         let also_database_url = database_url.to_string();
         let result = std::thread::spawn(move || {
@@ -128,6 +142,7 @@ impl ProviderDb {
         Self {
             connection,
             pc_client,
+            account_id,
         }
     }
 
@@ -228,6 +243,32 @@ impl ProviderDb {
             Ok(channel) => Ok(channel),
             Err(e) => {
                 error!("Error inserting channel into database: {}", e);
+                Err(ProviderError::DBError(e))
+            }
+        }
+    }
+
+    pub async fn update_channel_last_active(
+        &self,
+        channel_name: &str,
+    ) -> ProviderResult<ChannelRow> {
+        let updated_channel_row = sqlx::query_as!(
+            ChannelRow,
+            r#"
+            UPDATE channel
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE name = ?
+            RETURNING *
+            "#,
+            channel_name
+        )
+        .fetch_one(&self.connection)
+        .await;
+
+        match updated_channel_row {
+            Ok(channel) => Ok(channel),
+            Err(e) => {
+                error!("Error updating channel in database: {}", e);
                 Err(ProviderError::DBError(e))
             }
         }
@@ -363,22 +404,25 @@ impl ProviderDb {
         stale_threshold: Duration,
         limit: Option<u32>,
     ) -> ProviderResult<Vec<ChannelRow>> {
-        // Get all the channels that haven't been closed
-        // and have been updated in the last stale_threshold
-        let updated_at_threshold = sqlx::types::chrono::Utc::now() - stale_threshold;
+        // Get all the channels that:
+        // 1. haven't been closed due to inactivity
+        // 2. have been updated in a while
+        // 3. are owned by the provider
+        let updated_at_threshold = chrono::Utc::now().naive_utc() - stale_threshold;
         let limit = limit.unwrap_or(16);
+        let account_id = self.account_id.to_string();
         let channels = sqlx::query_as!(
             ChannelRow,
             r#"
             SELECT *
             FROM channel
             WHERE updated_at < ? AND
-                  receiver != ?
+                  receiver = ?
             ORDER BY updated_at DESC
             LIMIT ?
             "#,
             updated_at_threshold,
-            CLOSED_CHANNEL_ACCOUNT_ID,
+            account_id,
             limit
         )
         .fetch_all(&self.connection)

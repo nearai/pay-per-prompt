@@ -16,6 +16,7 @@ use near_cli_rs::config::NetworkConfig as NearNetworkConfig;
 use near_crypto::InMemorySigner;
 use near_crypto::Signer;
 use near_crypto::{PublicKey as NearPublicKey, SecretKey as NearSecretKey};
+use near_jsonrpc_client::methods;
 use near_jsonrpc_client::JsonRpcClient;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
 use near_primitives::types::AccountId;
@@ -33,6 +34,7 @@ use crate::ChannelRow;
 use crate::ProviderError;
 use crate::ProviderResult;
 use crate::SignedStateError;
+use crate::SignedStateRow;
 use crate::{ProviderDb, MODEL_DELIMITER};
 
 #[derive(Debug, Deserialize, Clone)]
@@ -42,6 +44,7 @@ pub struct ProviderConfig {
     pub network: String,
     pub db_url: String,
     pub cost_per_completion: U128,
+    pub min_withdraw_amount: U128,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -165,9 +168,10 @@ pub struct PaymentChannelState {
 pub struct ProviderCtx {
     pub config: ProviderConfig,
     pub cancel_token: CancellationToken,
+    pub db: ProviderDb,
+    near_client: JsonRpcClient,
     pc_client: NearPaymentChannelContractClient,
-    db: ProviderDb,
-    _account_info: Arc<RwLock<AccountInfoPrivate>>,
+    account_info: Arc<RwLock<AccountInfoPrivate>>,
 }
 
 impl ProviderCtx {
@@ -221,23 +225,54 @@ impl ProviderCtx {
         );
 
         info!("Creating database");
-        let db = ProviderDb::new(&config.db_url, pc_client.clone());
+        let db = ProviderDb::new(
+            &config.db_url,
+            pc_client.clone(),
+            account_info.account_id.clone(),
+        );
+
+        info!("Creating near client");
+        let near_client = JsonRpcClient::connect(near_network_config.rpc_url.as_ref());
 
         Self {
             config,
             db,
             pc_client,
+            near_client,
             cancel_token: CancellationToken::new(),
-            _account_info: Arc::new(RwLock::new(account_info)),
+            account_info: Arc::new(RwLock::new(account_info)),
         }
     }
 
+    async fn create_close_signed_state(&self, channel_name: &str) -> NearSignedState {
+        let state = NearState {
+            channel_id: channel_name.to_string(),
+            spent_balance: NearToken::from_yoctonear(0),
+        };
+        let message = borsh::to_vec(&state).unwrap();
+        let signer = self.account_info.read().await.as_signer();
+        let signature = signer.sign(&message);
+
+        NearSignedState { state, signature }
+    }
+
+    pub async fn current_gas_price(&self) -> NearToken {
+        let request = methods::gas_price::RpcGasPriceRequest { block_id: None };
+        let result = self.near_client.call(request).await.unwrap();
+        NearToken::from_yoctonear(result.gas_price)
+    }
+
     pub async fn public_account_info(&self) -> AccountInfoPublic {
-        self._account_info.read().await.public_view()
+        self.account_info.read().await.public_view()
     }
 
     pub async fn get_pc_state(&self, channel_name: &str) -> ProviderResult<PaymentChannelState> {
         let channel_row = self.db.get_channel_row(channel_name).await?;
+        let channel_row = if channel_row.is_stale() {
+            self.db.refresh_channel_row(channel_name).await?
+        } else {
+            channel_row
+        };
 
         // Get the spent balance from the latest signed state
         // If no signed state is found, the spent balance is 0
@@ -277,12 +312,12 @@ impl ProviderCtx {
                     e
                 )))
             })?;
-        if receiver_public_key != self._account_info.read().await.public_key {
+        if receiver_public_key != self.account_info.read().await.public_key {
             return Err(ProviderError::Channel(ChannelError::InvalidOwner(format!(
                 "Receiver public key {} of channel {} does not match public key {}",
                 channel_row.name,
                 receiver_public_key,
-                self._account_info.read().await.public_key
+                self.account_info.read().await.public_key
             ))));
         }
 
@@ -366,6 +401,55 @@ impl ProviderCtx {
         Ok(())
     }
 
+    pub async fn try_withdraw_funds(
+        &self,
+        channel: &ChannelRow,
+        signed_state: &SignedStateRow,
+        and_close: bool,
+    ) -> ProviderResult<()> {
+        if channel.receiver != self.account_info.read().await.account_id {
+            return Err(ProviderError::Channel(ChannelError::InvalidOwner(format!(
+                "Receiver public key {} of channel {} does not match public key {}",
+                channel.name,
+                channel.receiver,
+                self.account_info.read().await.public_key
+            ))));
+        }
+
+        let already_withdrawn_amount = channel.withdraw_balance().as_yoctonear();
+        let signed_state_withdraw_amount = signed_state.spent_balance().as_yoctonear();
+
+        // The amount we are permitted to withdraw should be monotonically increasing
+        // If it is not, we are likely doing a double withdrawal (big no no)
+        if !(already_withdrawn_amount < signed_state_withdraw_amount) {
+            return Err(ProviderError::Channel(ChannelError::NonMonotonicWithdraw));
+        }
+
+        // When withdrawing, we need to check that the amount we are withdrawing is greater
+        // than the minimum withdraw amount. It is economically 'unwise' otherwise
+        let diff = signed_state_withdraw_amount.saturating_sub(already_withdrawn_amount);
+        let min_withdraw_amount =
+            NearToken::from_yoctonear(self.config.min_withdraw_amount.0).as_yoctonear();
+        if diff < min_withdraw_amount {
+            return Err(ProviderError::Channel(ChannelError::WithdrawTooSmall));
+        }
+
+        if and_close {
+            // Close+Withdraw the funds
+            let close_signed_state = self.create_close_signed_state(&channel.name).await;
+            let near_signed_state: NearSignedState = signed_state.into();
+            self.pc_client
+                .withdraw_and_close(close_signed_state, near_signed_state)
+                .await;
+        } else {
+            // Withdraw the funds
+            let near_signed_state: NearSignedState = signed_state.into();
+            self.pc_client.withdraw(near_signed_state).await;
+        }
+
+        Ok(())
+    }
+
     pub async fn close_pc(&self, channel_name: &str) -> ProviderResult<NearSignedState> {
         // TODO: Require signature from the sender to close the channel, so no other user can send the close request
         let channel_row = self.db.get_channel_row(channel_name).await?;
@@ -378,40 +462,13 @@ impl ProviderCtx {
                 "There is a signed state: {:?}",
                 signed_state.spent_balance()
             );
-            // TODO: Check the amount of money available is large enough so that it makes sense to withdraw it
-            let state: NearSignedState = signed_state.into();
 
-            info!("Withdrawing: {:?}", state);
-
-            self.pc_client.withdraw(state).await;
+            self.try_withdraw_funds(&channel_row, &signed_state, false)
+                .await?;
         }
 
         // Payload to send to user to close the channel
-        let state = NearState {
-            channel_id: channel_name.to_string(),
-            spent_balance: NearToken::from_yoctonear(0),
-        };
-
-        let message = borsh::to_vec(&state).unwrap();
-        let signer = self._account_info.read().await.as_signer();
-        let signature = signer.sign(&message);
-
         // TODO: Update db reflecting that the channel is now closed
-
-        Ok(NearSignedState { state, signature })
-    }
-
-    pub async fn get_stale_channels(
-        &self,
-        stale_threshold: Duration,
-        batch_size: Option<u32>,
-    ) -> ProviderResult<Vec<ChannelRow>> {
-        self.db
-            .get_stale_channels(stale_threshold, batch_size)
-            .await
-    }
-
-    pub async fn refresh_channel_row(&self, channel_name: &str) -> ProviderResult<ChannelRow> {
-        self.db.refresh_channel_row(channel_name).await
+        Ok(self.create_close_signed_state(channel_name).await)
     }
 }
