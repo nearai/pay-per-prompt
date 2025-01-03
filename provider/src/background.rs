@@ -4,7 +4,7 @@ use futures::stream::{self, StreamExt};
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
-use crate::{ProviderCtx, ProviderError, STALE_CHANNEL_THRESHOLD};
+use crate::{CloseChannelType, ProviderCtx, ProviderError, STALE_CHANNEL_THRESHOLD};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const BATCH_SIZE: u32 = 16;
@@ -30,20 +30,20 @@ impl ProviderBackgroundService {
                         break;
                     }
                     _ = tokio::time::sleep(POLL_INTERVAL) => {
-                        // The background task should
-                        // 1. Withdraw+Close any inactive channels
-                        // 2. Withdraw from any force closed channels
 
+                        // The background task should
+                        // 1. Withdraw+Close any 'inactive' channels
+                        // 2. Withdraw from any force closed channels
                         match self.ctx.db.get_stale_channels(STALE_CHANNEL_THRESHOLD, Some(BATCH_SIZE)).await {
                             Ok(channels) => {
                                 if !channels.is_empty() {
                                     info!("Found {} stale channels", channels.len());
                                     stream::iter(channels)
-                                        .map(|channel| {
+                                        .map(|channel_row| {
                                             let also_ctx = self.ctx.clone();
-                                            let channel_name = channel.name.clone();
+                                            let channel_name = channel_row.name.clone();
                                             async move {
-                                                let last_signed_state = match also_ctx.db.latest_signed_state(&channel_name).await {
+                                                let last_signed_state = match also_ctx.db.get_latest_signed_state(&channel_name).await {
                                                     Ok(Some(last_signed_state)) => last_signed_state,
 
                                                     // If no signed states are found then nothing to do
@@ -67,36 +67,45 @@ impl ProviderBackgroundService {
                                                     }
                                                 };
 
-                                                let channel_row = match also_ctx.db.refresh_channel_row(&channel_name).await {
+                                                // The background service only cares about channels with 'payments' (a.k.a signed states)
+                                                // associated with them. Make sure we have the latest state of the channel
+                                                // before proceeding
+                                                let channel_row = match also_ctx.get_fresh_channel_row(&channel_name).await {
                                                     Ok(channel_row) => channel_row,
-                                                    Err(ProviderError::DBError(e)) => {
-                                                        error!("Database error refreshing channel row: {}", e);
-                                                        return;
-                                                    }
                                                     Err(e) => {
-                                                        error!("Error refreshing channel row: {:?}", e);
+                                                        error!("Error getting fresh channel row: {:?}", e);
                                                         return;
                                                     }
                                                 };
 
-                                                let inactive_threshold = chrono::Utc::now().naive_utc() - CHANNEL_INACTIVITY_CLOSE_THRESHOLD;
-                                                let has_withdrawable = channel_row.withdraw_balance() < last_signed_state.spent_balance();
-                                                let channel_inactive = last_signed_state.created_at < inactive_threshold;
+                                                // To withdraw funds means that the last known signed state
+                                                // has a spend balance greater than the previously withdrawn balance
+                                                let can_withdraw_funds = channel_row.withdrawn_balance() < last_signed_state.spent_balance();
 
-                                                if channel_inactive && has_withdrawable {
-                                                    match also_ctx.try_withdraw_funds(&channel_row, &last_signed_state, true).await {
+                                                // If the channel is inactive and has a withdrawable balance,
+                                                // try to withdraw funds and close the channel
+                                                let channel_inactive = last_signed_state.created_at < (chrono::Utc::now().naive_utc() - CHANNEL_INACTIVITY_CLOSE_THRESHOLD);
+                                                if channel_inactive && can_withdraw_funds {
+                                                    match also_ctx.try_withdraw_funds(&channel_name, CloseChannelType::HardClose).await {
                                                         Ok(_) => (),
                                                         Err(e) => error!("Error withdrawing funds from channel {}: {:?}", channel_name, e),
                                                     }
                                                 }
-
-                                                if channel_row.force_close_started.is_some() && has_withdrawable {
-                                                    match also_ctx.try_withdraw_funds(&channel_row, &last_signed_state, false).await {
+                                                // If the channel has been force closed and has a withdrawable balance,
+                                                // try to withdraw funds. Leave the channel open
+                                                else if channel_row.force_close_started.is_some() && can_withdraw_funds {
+                                                    match also_ctx.try_withdraw_funds(&channel_name, CloseChannelType::SoftClose).await {
                                                         Ok(_) => (),
                                                         Err(e) => error!("Error withdrawing funds from channel {}: {:?}", channel_name, e),
                                                     }
                                                 }
-
+                                                // if the channel is active update it to the last active time
+                                                else {
+                                                    match also_ctx.db.update_channel_last_active(&channel_name).await {
+                                                        Ok(_) => (),
+                                                        Err(e) => error!("Error updating channel last active: {:?}", e),
+                                                    };
+                                                }
                                             }
                                         })
                                         .buffer_unordered(MAX_CONCURRENT_TASKS as usize)
