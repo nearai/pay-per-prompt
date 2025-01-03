@@ -10,22 +10,35 @@ pub enum ProviderError {
 
 #[derive(Debug)]
 pub enum ChannelError {
-    NotFound,
-    Closed,
+    // Missing channel errors
+    NotFoundInDB,
+    NotFoundInContract,
+
+    // Closed channel errors
+    HardClosed(String),
+    SoftClosed(String),
+    Closing(String),
+
+    // Withdraw errors
+    WithdrawTooSmall(String),
+    WithdrawNonMonotonic,
+
+    // Invalid errors
     InvalidOwner(String),
     InvalidPublicKey(String),
-    WithdrawTooSmall,
-    NonMonotonicWithdraw,
 }
 
 #[derive(Debug)]
 pub enum SignedStateError {
+    // Validation errors
     SerializationError(String),
     InvalidSignature,
+    InvalidClosedSignedState(String),
+
+    // Spend errors
     NonMonotonicSpentBalance(String),
-    AmountTooSmall(String),
+    PaymentTooSmall(String),
     InsufficientFunds(String),
-    InvalidAddedBalance(String),
 }
 
 #[derive(Debug)]
@@ -40,24 +53,42 @@ impl Display for UserFacingError {
 impl From<&ProviderError> for UserFacingError {
     fn from(error: &ProviderError) -> Self {
         match error {
-            ProviderError::Channel(ChannelError::NotFound) => {
+            //
+            // Channel errors
+            //
+            ProviderError::Channel(ChannelError::NotFoundInDB) => {
                 UserFacingError("Payment channel not found".to_string())
             }
-            ProviderError::Channel(ChannelError::Closed) => {
-                UserFacingError("Payment channel closed".to_string())
+            ProviderError::Channel(ChannelError::NotFoundInContract) => {
+                UserFacingError("Payment channel not found".to_string())
             }
-            ProviderError::Channel(ChannelError::InvalidPublicKey(e)) => {
-                UserFacingError(format!("Invalid public key: {}", e))
+            ProviderError::Channel(ChannelError::HardClosed(e)) => {
+                UserFacingError(format!("Payment channel hard closed: {}", e))
+            }
+            ProviderError::Channel(ChannelError::SoftClosed(e)) => {
+                UserFacingError(format!("Payment channel soft closed: {}", e))
+            }
+            ProviderError::Channel(ChannelError::Closing(e)) => {
+                UserFacingError(format!("Payment channel closing: {}", e))
             }
             ProviderError::Channel(ChannelError::InvalidOwner(e)) => {
                 UserFacingError(format!("Invalid owner: {}", e))
             }
+            ProviderError::Channel(ChannelError::InvalidPublicKey(e)) => {
+                UserFacingError(format!("Invalid public key: {}", e))
+            }
+            ProviderError::Channel(ChannelError::WithdrawTooSmall(e)) => {
+                UserFacingError(format!("Withdraw too small: {}", e))
+            }
+            ProviderError::Channel(ChannelError::WithdrawNonMonotonic) => {
+                UserFacingError("Non-monotonic withdraw".to_string())
+            }
 
+            //
+            // SignedState errors
+            //
             ProviderError::SignedState(SignedStateError::SerializationError(e)) => {
-                UserFacingError(format!(
-                    "Unable to deserialize borsh serialized SignedState from payment header: {}",
-                    e
-                ))
+                UserFacingError(format!("Unable to deserialize SignedState: {}", e))
             }
             ProviderError::SignedState(SignedStateError::InvalidSignature) => {
                 UserFacingError("Invalid signature".to_string())
@@ -65,20 +96,18 @@ impl From<&ProviderError> for UserFacingError {
             ProviderError::SignedState(SignedStateError::NonMonotonicSpentBalance(e)) => {
                 UserFacingError(format!("Non-monotonic spent balance: {}", e))
             }
-            ProviderError::SignedState(SignedStateError::AmountTooSmall(e)) => {
-                UserFacingError(format!("Amount too small: {}", e))
+            ProviderError::SignedState(SignedStateError::PaymentTooSmall(e)) => {
+                UserFacingError(format!("Payment too small: {}", e))
             }
             ProviderError::SignedState(SignedStateError::InsufficientFunds(e)) => {
                 UserFacingError(format!("Insufficient funds: {}", e))
             }
-            ProviderError::SignedState(SignedStateError::InvalidAddedBalance(e)) => {
-                UserFacingError(format!("Invalid added balance: {}", e))
+            ProviderError::SignedState(SignedStateError::InvalidClosedSignedState(e)) => {
+                UserFacingError(format!("Invalid signed state: {}", e))
             }
 
             // Probobally not the best idea to expose the internal database error to users
             ProviderError::DBError(e) => UserFacingError(format!("Internal database error: {}", e)),
-
-            _ => UserFacingError("Internal server error".to_string()),
         }
     }
 }
@@ -86,23 +115,25 @@ impl From<&ProviderError> for UserFacingError {
 impl From<&ProviderError> for StatusCode {
     fn from(error: &ProviderError) -> Self {
         match error {
-            ProviderError::Channel(ChannelError::NotFound) => StatusCode::NOT_FOUND,
-            ProviderError::Channel(ChannelError::Closed) => StatusCode::BAD_REQUEST,
+            ProviderError::Channel(ChannelError::NotFoundInDB) => StatusCode::NOT_FOUND,
+            ProviderError::Channel(ChannelError::NotFoundInContract) => StatusCode::NOT_FOUND,
+            ProviderError::Channel(ChannelError::Closing(_)) => StatusCode::BAD_REQUEST,
+            ProviderError::Channel(ChannelError::HardClosed(_)) => StatusCode::BAD_REQUEST,
+            ProviderError::Channel(ChannelError::SoftClosed(_)) => StatusCode::BAD_REQUEST,
             ProviderError::Channel(ChannelError::InvalidOwner(_)) => StatusCode::BAD_REQUEST,
             ProviderError::Channel(ChannelError::InvalidPublicKey(_)) => StatusCode::BAD_REQUEST,
+            ProviderError::Channel(ChannelError::WithdrawTooSmall(_)) => StatusCode::BAD_REQUEST,
+            ProviderError::Channel(ChannelError::WithdrawNonMonotonic) => StatusCode::BAD_REQUEST,
             ProviderError::SignedState(SignedStateError::InvalidSignature) => {
                 StatusCode::BAD_REQUEST
             }
             ProviderError::SignedState(SignedStateError::NonMonotonicSpentBalance(_)) => {
                 StatusCode::BAD_REQUEST
             }
-            ProviderError::SignedState(SignedStateError::AmountTooSmall(_)) => {
+            ProviderError::SignedState(SignedStateError::PaymentTooSmall(_)) => {
                 StatusCode::BAD_REQUEST
             }
             ProviderError::SignedState(SignedStateError::InsufficientFunds(_)) => {
-                StatusCode::BAD_REQUEST
-            }
-            ProviderError::SignedState(SignedStateError::InvalidAddedBalance(_)) => {
                 StatusCode::BAD_REQUEST
             }
             _ => StatusCode::INTERNAL_SERVER_ERROR,
