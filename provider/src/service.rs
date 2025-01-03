@@ -20,6 +20,7 @@ use crate::ProviderCtx;
 use crate::UserFacingError;
 use crate::PAYMENTS_HEADER_NAME;
 use crate::{ModelInfo, Provider, BAD_REQUEST, FOUR_HUNDRED};
+use cli::config::SignedState as NearSignedState;
 use openaiapi::apis::completions::{
     Completions, CreateCompletionResponse as CreateCompletionResponseAPI,
 };
@@ -39,6 +40,15 @@ use openaiclient::models::CreateCompletionRequest as CreateCompletionRequestClie
 pub struct ProviderBaseServiceError {
     pub message: String,
     pub status_code: StatusCode,
+}
+
+impl ProviderBaseServiceError {
+    pub fn new(message: String, status_code: StatusCode) -> Self {
+        Self {
+            message,
+            status_code,
+        }
+    }
 }
 
 impl IntoResponse for ProviderBaseServiceError {
@@ -73,9 +83,9 @@ impl ProviderBaseService {
         Router::new()
             .route("/health", get(|| async { "OK" }))
             .route("/info", get(info_handler))
-            .route("/pc/close/:channel_name", get(close_handler))
+            .route("/pc/close/:channel_name", post(close_handler))
             .route("/pc/state/:channel_name", get(get_pc_state))
-            .route("/pc/state", post(post_pc_signed_state))
+            .route("/pc/validate", post(validate_pc_signed_state))
             .with_state(self)
     }
 }
@@ -87,62 +97,79 @@ async fn info_handler(State(state): State<ProviderBaseService>) -> Json<AccountI
 async fn close_handler(
     State(state): State<ProviderBaseService>,
     Path(channel_name): Path<String>,
-) -> Result<impl IntoResponse, ProviderBaseServiceError> {
-    let result = state.ctx.close_pc(&channel_name).await.map_err(|e| {
-        let message = UserFacingError::from(&e).to_string();
-        let status_code = StatusCode::from(&e);
-        ProviderBaseServiceError {
-            message,
-            status_code,
-        }
+    body: String,
+) -> Result<Json<NearSignedState>, ProviderBaseServiceError> {
+    let decoded_payload = BASE64_STANDARD.decode(&body).map_err(|e| {
+        ProviderBaseServiceError::new(
+            format!("Unable to decode base64: {}", e),
+            StatusCode::BAD_REQUEST,
+        )
     })?;
-    Ok((StatusCode::OK, Json(result)))
+    let signed_state = borsh::from_slice::<NearSignedState>(&decoded_payload).map_err(|e| {
+        ProviderBaseServiceError::new(
+            format!(
+                "Unable to deserialize borsh serialized SignedState from body: {}",
+                e
+            ),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
+
+    let result = state
+        .ctx
+        .close_pc(&channel_name, &signed_state)
+        .await
+        .map_err(|e| {
+            let message = UserFacingError::from(&e).to_string();
+            let status_code = StatusCode::from(&e);
+            ProviderBaseServiceError::new(message, status_code)
+        })?;
+    Ok(Json(result))
 }
 
 async fn get_pc_state(
     State(state): State<ProviderBaseService>,
     Path(channel_name): Path<String>,
 ) -> Result<impl IntoResponse, ProviderBaseServiceError> {
-    let result =
-        state
-            .ctx
-            .get_pc_state(&channel_name)
-            .await
-            .map_err(|e| ProviderBaseServiceError {
-                message: UserFacingError::from(&e).to_string(),
-                status_code: StatusCode::from(&e),
-            })?;
+    let result = state.ctx.get_pc_state(&channel_name).await.map_err(|e| {
+        ProviderBaseServiceError::new(UserFacingError::from(&e).to_string(), StatusCode::from(&e))
+    })?;
 
     Ok((StatusCode::OK, Json(result)))
 }
 
-async fn post_pc_signed_state(
+async fn validate_pc_signed_state(
     State(state): State<ProviderBaseService>,
     body: String,
 ) -> Result<impl IntoResponse, ProviderBaseServiceError> {
-    let decoded_payload = BASE64_STANDARD
-        .decode(&body)
-        .map_err(|e| ProviderBaseServiceError {
-            message: format!("Unable to decode base64: {}", e),
-            status_code: StatusCode::BAD_REQUEST,
-        })?;
+    let decoded_payload = BASE64_STANDARD.decode(&body).map_err(|e| {
+        ProviderBaseServiceError::new(
+            format!("Unable to decode base64: {}", e),
+            StatusCode::BAD_REQUEST,
+        )
+    })?;
     let signed_state = borsh::from_slice::<SignedState>(&decoded_payload).map_err(|e| {
-        ProviderBaseServiceError {
-            message: format!(
+        ProviderBaseServiceError::new(
+            format!(
                 "Unable to deserialize borsh serialized SignedState from payment header: {}",
                 e
             ),
-            status_code: StatusCode::BAD_REQUEST,
-        }
+            StatusCode::BAD_REQUEST,
+        )
     })?;
 
+    // Check that a signed state is valid, but don't insert,
+    // Just show the user if the signed state is valid
+    let min_cost = state.ctx.config.cost_per_completion.0;
     state
         .ctx
-        .validate_insert_signed_state(0, &signed_state)
+        .validate_signed_state(min_cost, &signed_state, false)
         .await
-        .map_err(|e| ProviderBaseServiceError {
-            message: UserFacingError::from(&e).to_string(),
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+        .map_err(|e| {
+            ProviderBaseServiceError::new(
+                UserFacingError::from(&e).to_string(),
+                StatusCode::from(&e),
+            )
         })?;
 
     Ok((StatusCode::OK, Json(signed_state)))
@@ -332,7 +359,7 @@ impl Completions for ProviderOaiService {
         let min_cost = self.ctx.config.cost_per_completion.0;
         let validate_signed_state_result = self
             .ctx
-            .validate_insert_signed_state(min_cost, &signed_state)
+            .validate_signed_state(min_cost, &signed_state, true) // user is paying for the service
             .await;
         match validate_signed_state_result {
             Ok(_) => (),
