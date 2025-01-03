@@ -61,9 +61,6 @@ enum AdvancedCommands {
         amount: NearToken,
         /// Id of the channel. If it is not specified we look if there is only one channel and use it.
         channel_id: Option<String>,
-        /// If `update` is true, the local instance of the channel will be updated.
-        #[arg(short, long)]
-        no_update: bool,
     },
 }
 
@@ -117,12 +114,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             AdvancedCommands::StartForceClose => println!("StartForceClose"),
             AdvancedCommands::FinishForceClose => println!("FinishForceClose"),
-            AdvancedCommands::Send {
-                amount,
-                channel_id,
-                no_update,
-            } => {
-                send_command(&config, amount, channel_id, !no_update);
+            AdvancedCommands::Send { amount, channel_id } => {
+                send_command(&config, amount, channel_id).await;
             }
         },
     }
