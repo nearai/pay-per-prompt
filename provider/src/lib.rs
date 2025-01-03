@@ -27,7 +27,7 @@ pub const CLOSED_CHANNEL_ACCOUNT_ID: &str =
 
 // Amount of time until a channel is considered stale and the state should be
 // refreshed from the contract
-pub const STALE_CHANNEL_THRESHOLD: Duration = Duration::from_secs(30); // 30 seconds
+pub const STALE_CHANNEL_THRESHOLD: Duration = Duration::from_secs(30);
 
 // Copied from the contract code
 pub const SECOND: u64 = 1_000_000_000;
