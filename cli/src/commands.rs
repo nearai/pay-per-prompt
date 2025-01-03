@@ -66,6 +66,12 @@ pub async fn info_command(config: &Config, channel_id: Option<String>, update: b
     let mut channel = Channel::load(&channel_id, true);
 
     if update {
+        // ensure current spent balance is synced with the provider
+        let provider = Provider::new(config.provider_url.clone());
+        let spent_balance = provider.spent_balance(&channel_id).await;
+        channel.spent_balance = NearToken::from_yoctonear(spent_balance.spent_balance.into());
+        channel.save(config.verbose);
+
         let contract = config.near_contract();
         let updated_channel = contract.channel(&channel_id).await;
         if let Some(updated_channel) = updated_channel {
@@ -105,12 +111,21 @@ pub async fn info_command(config: &Config, channel_id: Option<String>, update: b
     }
 }
 
-pub fn send_command(config: &Config, amount: NearToken, channel_id: Option<String>, update: bool) {
+pub async fn send_command(config: &Config, amount: NearToken, channel_id: Option<String>) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
     let mut channel = Channel::load(&channel_id, config.verbose);
 
-    let new_balance = channel.spent_balance.saturating_add(amount);
+    // ensure current spent balance is synced with the provider
+    let provider = Provider::new(config.provider_url.clone());
+    let spent_balance = provider.spent_balance(&channel_id).await;
+    println!(
+        "Spent balance: {}",
+        NearToken::from_yoctonear(spent_balance.spent_balance.into())
+    );
+    channel.spent_balance = NearToken::from_yoctonear(spent_balance.spent_balance.into());
+    channel.save(config.verbose);
 
+    let new_balance = channel.spent_balance.saturating_add(amount);
     if new_balance > channel.added_balance {
         eprintln!(
             "Amount exceeds the available balance. Current balance: {}, Sending: {}",
@@ -130,10 +145,6 @@ pub fn send_command(config: &Config, amount: NearToken, channel_id: Option<Strin
     }
 
     println!("\nPayload:\n{}\n", channel.payload_b64());
-
-    if update {
-        channel.save(config.verbose);
-    }
 }
 
 pub async fn withdraw_command(config: &Config, payload: String) {
@@ -191,14 +202,33 @@ pub fn close_payload_command(config: &Config, channel_id: Option<String>) {
 
 pub async fn close_command(config: &Config, channel_id: Option<String>, payload: Option<String>) {
     let channel_id = channel_id.unwrap_or_else(find_only_channel_id);
-    let _ = Channel::load(&channel_id, config.verbose);
+    let channel = Channel::load(&channel_id, config.verbose);
 
     let signed_state = if let Some(payload) = payload {
         let raw = BASE64_STANDARD.decode(payload);
         near_sdk::borsh::from_slice(&raw.unwrap()).unwrap()
     } else {
+        let send_signer = near_crypto::InMemorySigner::from_secret_key(
+            channel.sender.account_id.clone(),
+            channel.sender_secret_key.clone(),
+        );
+
+        let state = crate::config::State {
+            channel_id: channel_id.clone(),
+            spent_balance: NearToken::from_near(0),
+        };
+
+        let raw_state = near_sdk::borsh::to_vec(&state).unwrap();
+        let signed_state = crate::config::SignedState {
+            state,
+            signature: send_signer.sign(&raw_state),
+        };
+        let signed_state_payload =
+            BASE64_STANDARD.encode(&near_sdk::borsh::to_vec(&signed_state).unwrap());
         let provider = Provider::new(config.provider_url.clone());
-        provider.close_payload(&channel_id).await
+        provider
+            .close_payload(&channel_id, &signed_state_payload)
+            .await
     };
 
     let contract = config.near_contract();
