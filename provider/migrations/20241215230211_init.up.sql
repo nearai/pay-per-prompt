@@ -8,8 +8,9 @@ CREATE TABLE IF NOT EXISTS channel (
     receiver VARCHAR(255) NOT NULL,
     receiver_pk VARCHAR(255) NOT NULL,
     added_balance BLOB NOT NULL CHECK (length(added_balance) = 16),
-    withdraw_balance BLOB NOT NULL CHECK (length(withdraw_balance) = 16),
-    force_close_started TIMESTAMP DEFAULT NULL
+    withdrawn_balance BLOB NOT NULL CHECK (length(withdrawn_balance) = 16),
+    force_close_started TIMESTAMP DEFAULT NULL,
+    soft_closed BOOLEAN NOT NULL DEFAULT FALSE
 );
 
 CREATE TABLE IF NOT EXISTS signed_state (
