@@ -48,7 +48,7 @@ pub struct Channel {
 
 #[near(serializers = [borsh, json])]
 #[derive(Clone)]
-struct Ownership {
+pub struct Ownership {
     owner: AccountId,
     fee: Fraction,
     balance: NearToken,
@@ -237,18 +237,13 @@ impl Contract {
 // Owner methods
 #[near_bindgen]
 impl Contract {
-    pub fn owner(&self) -> Option<AccountId> {
-        self.ownership.get().as_ref().map(|o| o.owner.clone())
+    /// Show owner information publicly
+    pub fn owner(&self) -> Option<Ownership> {
+        self.ownership.get().clone()
     }
 
+    #[private]
     pub fn owner_update(&mut self, new_owner: Option<AccountId>, new_fee: Fraction) {
-        let caller = env::predecessor_account_id();
-
-        require!(
-            caller == env::current_account_id() || Some(caller) == self.owner(),
-            "Only owner can update the internal state of the contract"
-        );
-
         require!(new_fee.is_less_than_one(), "Fee must be less than 1");
 
         let owner_balance = self
