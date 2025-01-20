@@ -2444,6 +2444,7 @@ dependencies = [
 name = "payment-channel"
 version = "0.1.0"
 dependencies = [
+ "borsh",
  "bs58 0.5.1",
  "near-sdk",
  "near-workspaces",

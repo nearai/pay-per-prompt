@@ -28,7 +28,6 @@ def main():
 
     while True:
         show_channel_info(nearpc)
-        # TODO: Add colors to the prompt so it is easier to see the information
 
         user_input = input(
             colored("\n\n[q: quit] You >>> ", "green", attrs=["bold"])

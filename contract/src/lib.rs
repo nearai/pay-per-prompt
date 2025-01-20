@@ -1,5 +1,6 @@
+use fraction::Fraction;
 use near_sdk::borsh::to_vec;
-use near_sdk::store::LookupMap;
+use near_sdk::store::{LazyOption, LookupMap};
 use near_sdk::{
     env, near, near_bindgen, require, AccountId, NearToken, PanicOnDefault, Promise, PublicKey,
     Timestamp,
@@ -7,6 +8,7 @@ use near_sdk::{
 use signature::Signature;
 use std::str::FromStr;
 
+mod fraction;
 mod signature;
 
 type ChannelId = String;
@@ -44,10 +46,19 @@ pub struct Channel {
     force_close_started: Option<Timestamp>,
 }
 
+#[near(serializers = [borsh, json])]
+#[derive(Clone)]
+pub struct Ownership {
+    owner: AccountId,
+    fee: Fraction,
+    balance: NearToken,
+}
+
 #[near(contract_state)]
 #[derive(PanicOnDefault)]
 pub struct Contract {
     channels: LookupMap<ChannelId, Channel>,
+    ownership: LazyOption<Ownership>,
 }
 
 #[near(serializers = [borsh, json])]
@@ -79,6 +90,7 @@ impl Contract {
     pub fn init() -> Contract {
         Contract {
             channels: LookupMap::new(b"c".to_vec()),
+            ownership: LazyOption::new(b"o", None),
         }
     }
 
@@ -124,7 +136,9 @@ impl Contract {
 
         channel.withdrawn_balance = state.state.spent_balance;
 
-        Promise::new(receiver).transfer(difference)
+        let after_fee = self.owner_collect_fee(difference);
+
+        Promise::new(receiver).transfer(after_fee)
     }
 
     #[payable]
@@ -218,10 +232,94 @@ impl Contract {
     pub fn channel(&self, channel_id: ChannelId) -> Option<Channel> {
         self.channels.get(&channel_id).cloned()
     }
+}
 
+// Owner methods
+#[near_bindgen]
+impl Contract {
+    /// Show owner information publicly
+    pub fn owner(&self) -> Option<Ownership> {
+        self.ownership.get().clone()
+    }
+
+    #[private]
+    pub fn owner_update(&mut self, new_owner: Option<AccountId>, new_fee: Fraction) {
+        require!(new_fee.is_less_than_one(), "Fee must be less than 1");
+
+        let owner_balance = self
+            .ownership
+            .get()
+            .as_ref()
+            .map(|o| o.balance)
+            .unwrap_or_default();
+
+        if new_owner.is_none() {
+            require!(
+                new_fee.is_zero(),
+                "New fee must be zero when removing the owner"
+            );
+            require!(
+                owner_balance.as_yoctonear() == 0,
+                "Owner balance must be zero when removing the owner"
+            );
+
+            self.ownership.set(None);
+        } else {
+            self.ownership.set(Some(Ownership {
+                owner: new_owner.unwrap(),
+                fee: new_fee,
+                balance: owner_balance,
+            }));
+        }
+    }
+
+    pub fn owner_withdraw(&mut self) -> Promise {
+        let Ownership {
+            owner,
+            fee,
+            balance,
+        } = self.ownership.get().clone().unwrap();
+
+        require!(balance.as_yoctonear() > 0, "No balance to withdraw");
+
+        self.ownership.set(Some(Ownership {
+            owner: owner.clone(),
+            fee,
+            balance: NearToken::from_yoctonear(0),
+        }));
+
+        Promise::new(owner).transfer(balance)
+    }
+
+    fn owner_collect_fee(&mut self, amount: NearToken) -> NearToken {
+        if let Some(ownership) = self.ownership.get_mut() {
+            let fee_amount = ownership.fee.mul_balance(amount);
+            let remaining_amount = amount.saturating_sub(fee_amount);
+            ownership.balance = ownership.balance.saturating_add(fee_amount);
+            remaining_amount
+        } else {
+            // No owner, no fee to collect
+            amount
+        }
+    }
+}
+
+// Migration methods
+#[near_bindgen]
+impl Contract {
     #[private]
     #[init(ignore_state)]
     pub fn migrate() -> Self {
-        Self::init()
+        #[derive(borsh::BorshDeserialize)]
+        struct OldContract {
+            channels: LookupMap<ChannelId, Channel>,
+        }
+
+        let contract = env::state_read::<OldContract>().unwrap();
+
+        Self {
+            channels: contract.channels,
+            ownership: LazyOption::new(b"o", None),
+        }
     }
 }
